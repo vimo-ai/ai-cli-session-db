@@ -1,0 +1,55 @@
+[package]
+name = "claude-session-db"
+version = "0.1.0"
+edition = "2021"
+description = "Shared database library for Claude session management with writer coordination"
+license = "MIT"
+
+[lib]
+name = "claude_session_db"
+crate-type = ["rlib", "cdylib"]
+
+[features]
+default = ["writer", "reader", "search", "coordination"]
+writer = []           # 写入能力
+reader = []           # 只读能力
+search = ["fts"]      # 搜索能力
+fts = []              # FTS5 支持
+coordination = []     # Writer 协调逻辑
+ffi = []              # C FFI 导出 (Swift 绑定用)
+
+[dependencies]
+# 数据库
+rusqlite = { version = "0.32", features = ["bundled", "vtab"] }
+
+# AI 会话收集 (JSONL 解析)
+# 使用 git 依赖，支持独立编译；在 ETerm 主仓库中通过 [patch] 覆盖成本地路径
+ai-cli-session-collector = { git = "https://github.com/vimo-ai/ai-cli-session-collector" }
+
+# 异步运行时
+tokio = { version = "1", features = ["sync", "time", "rt"] }
+
+# 序列化
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+# 工具
+anyhow = "1"
+thiserror = "2"
+tracing = "0.1"
+uuid = { version = "1", features = ["v4"] }
+chrono = { version = "0.4", features = ["serde"] }
+dirs = "5"
+parking_lot = "0.12"
+
+[[bin]]
+name = "migrate_archive"
+path = "src/bin/migrate_archive.rs"
+
+[build-dependencies]
+cbindgen = "0.27"
+
+[dev-dependencies]
+tokio = { version = "1", features = ["full", "test-util"] }
+tempfile = "3"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
