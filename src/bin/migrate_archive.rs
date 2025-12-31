@@ -3,7 +3,7 @@
 //! 从 Archive 目录读取 JSONL 文件，使用新的内容分离逻辑导入到数据库
 
 use ai_cli_session_collector::{ClaudeAdapter, IndexableSession};
-use anyhow::{Context, Result};
+use anyhow::Result;
 use rusqlite::{params, Connection};
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
@@ -45,6 +45,13 @@ fn main() -> Result<()> {
     let mut total_messages = 0;
     let mut updated_messages = 0;
 
+    // 禁用触发器
+    conn.execute_batch(
+        "DROP TRIGGER IF EXISTS messages_ai;
+         DROP TRIGGER IF EXISTS messages_ad;
+         DROP TRIGGER IF EXISTS messages_au;",
+    )?;
+
     // 开始事务
     let tx = conn.transaction()?;
 
@@ -68,9 +75,23 @@ fn main() -> Result<()> {
     println!("新增消息: {}", total_messages);
     println!("更新消息: {}", updated_messages);
 
-    // 重建 FTS
+    // 重建 FTS 和触发器
     println!("\n重建 FTS 索引...");
     conn.execute("INSERT INTO messages_fts(messages_fts) VALUES('rebuild')", [])?;
+
+    conn.execute_batch(
+        "CREATE TRIGGER IF NOT EXISTS messages_ai AFTER INSERT ON messages BEGIN
+            INSERT INTO messages_fts(rowid, content_full) VALUES (new.id, new.content_full);
+         END;
+         CREATE TRIGGER IF NOT EXISTS messages_ad AFTER DELETE ON messages BEGIN
+            INSERT INTO messages_fts(messages_fts, rowid, content_full) VALUES('delete', old.id, old.content_full);
+         END;
+         CREATE TRIGGER IF NOT EXISTS messages_au AFTER UPDATE ON messages BEGIN
+            INSERT INTO messages_fts(messages_fts, rowid, content_full) VALUES('delete', old.id, old.content_full);
+            INSERT INTO messages_fts(rowid, content_full) VALUES (new.id, new.content_full);
+         END;",
+    )?;
+
     println!("完成");
 
     Ok(())
@@ -78,9 +99,7 @@ fn main() -> Result<()> {
 
 fn get_existing_uuids(conn: &Connection) -> Result<HashSet<String>> {
     let mut stmt = conn.prepare("SELECT uuid FROM messages")?;
-    let uuids: Result<HashSet<String>, _> = stmt
-        .query_map([], |row| row.get(0))?
-        .collect();
+    let uuids: Result<HashSet<String>, _> = stmt.query_map([], |row| row.get(0))?.collect();
     Ok(uuids?)
 }
 
@@ -118,15 +137,9 @@ fn process_jsonl(
             let updated = conn.execute(
                 "UPDATE messages SET
                     content_text = ?1,
-                    content_full = ?2,
-                    raw = ?3
-                WHERE uuid = ?4 AND (content_text != ?1 OR content_full != ?2)",
-                params![
-                    &msg.content.text,
-                    &msg.content.full,
-                    &msg.raw,
-                    &msg.uuid,
-                ],
+                    content_full = ?2
+                WHERE uuid = ?3 AND (content_text != ?1 OR content_full != ?2)",
+                params![&msg.content.text, &msg.content.full, &msg.uuid,],
             )?;
             if updated > 0 {
                 updated_messages += 1;
@@ -138,20 +151,16 @@ fn process_jsonl(
             // 插入新消息
             conn.execute(
                 "INSERT OR IGNORE INTO messages
-                    (session_id, uuid, type, content_text, content_full, timestamp, sequence, source, channel, model, raw)
-                VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
+                    (session_id, uuid, type, content_text, content_full, timestamp, sequence, source)
+                VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, 'claude')",
                 params![
                     &session.session_id,
                     &msg.uuid,
-                    format!("{:?}", msg.msg_type).to_lowercase(),
+                    &msg.role,
                     &msg.content.text,
                     &msg.content.full,
                     msg.timestamp,
                     msg.sequence,
-                    "claude",
-                    &session.meta.channel,
-                    &session.meta.model,
-                    &msg.raw,
                 ],
             )?;
             new_messages += 1;
@@ -163,11 +172,8 @@ fn process_jsonl(
 
 fn ensure_session(conn: &Connection, session: &IndexableSession) -> Result<()> {
     // 确保 project 存在
-    let project_path = session.meta.cwd.as_deref().unwrap_or("unknown");
-    let project_name = Path::new(project_path)
-        .file_name()
-        .map(|s| s.to_string_lossy().to_string())
-        .unwrap_or_else(|| "unknown".to_string());
+    let project_path = &session.project_path;
+    let project_name = &session.project_name;
 
     conn.execute(
         "INSERT OR IGNORE INTO projects (path, name, source) VALUES (?1, ?2, 'claude')",
@@ -182,15 +188,9 @@ fn ensure_session(conn: &Connection, session: &IndexableSession) -> Result<()> {
 
     // 确保 session 存在
     conn.execute(
-        "INSERT OR IGNORE INTO sessions (session_id, project_id, message_count, cwd, model, channel)
-         VALUES (?1, ?2, 0, ?3, ?4, ?5)",
-        params![
-            &session.session_id,
-            project_id,
-            session.meta.cwd,
-            session.meta.model,
-            session.meta.channel,
-        ],
+        "INSERT OR IGNORE INTO sessions (session_id, project_id, message_count, cwd)
+         VALUES (?1, ?2, 0, ?3)",
+        params![&session.session_id, project_id, project_path,],
     )?;
 
     Ok(())
