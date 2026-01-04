@@ -151,8 +151,8 @@ fn process_jsonl(
             // 插入新消息
             conn.execute(
                 "INSERT OR IGNORE INTO messages
-                    (session_id, uuid, type, content_text, content_full, timestamp, sequence, source)
-                VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, 'claude')",
+                    (session_id, uuid, type, content_text, content_full, timestamp, sequence, source, raw)
+                VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, 'claude', ?8)",
                 params![
                     &session.session_id,
                     &msg.uuid,
@@ -161,6 +161,7 @@ fn process_jsonl(
                     &msg.content.full,
                     msg.timestamp,
                     msg.sequence,
+                    &msg.raw,
                 ],
             )?;
             new_messages += 1;

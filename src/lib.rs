@@ -45,6 +45,7 @@
 pub mod config;
 pub mod db;
 pub mod error;
+pub mod reader;
 pub mod schema;
 pub mod types;
 
@@ -64,6 +65,7 @@ pub mod ffi;
 pub use config::DbConfig;
 pub use db::{MessageInput, ProjectWithSource, SessionDB, SessionInput};
 pub use error::{Error, Result};
+pub use reader::{MessagesResult, Order, ProjectInfo, RawMessagesResult, SessionMetrics, SessionReader};
 pub use types::*;
 
 #[cfg(feature = "coordination")]

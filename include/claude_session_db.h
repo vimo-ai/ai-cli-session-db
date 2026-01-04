@@ -226,7 +226,7 @@ typedef struct MessagesResultC {
  * 连接数据库
  *
  * # Safety
- * `path` 必须是有效的 C 字符串
+ * `path` 可以为 null（使用默认路径），或有效的 C 字符串
  */
 enum SessionDbError session_db_connect(const char *path, struct SessionDbHandle **out_handle);
 
@@ -468,27 +468,46 @@ struct ParseResult session_db_parse_jsonl(const char *jsonl_path);
 void session_db_free_parse_result(struct IndexableSessionC *session);
 
 /**
- * 编码项目路径为 Claude 目录名
- * /Users/xxx/project → -Users-xxx-project
+ * 获取会话文件路径
+ *
+ * 通过 session_id 查询完整的文件路径。
+ * 这是 `encode_path` 的替代方案，从缓存/数据库获取而不是计算。
+ *
+ * # 参数
+ * - `projects_path`: Claude projects 目录路径，null 使用默认路径
+ * - `session_id`: 会话 ID
+ *
+ * # 返回
+ * - 成功：返回完整的 session 文件路径
+ * - 失败（未找到）：返回 null
  *
  * # Safety
- * - `path` 必须是有效的 UTF-8 C 字符串
  * - 返回的字符串需要调用 `session_db_free_string` 释放
  */
-char *session_db_encode_path(const char *path);
+char *session_db_get_session_path(const char *projects_path, const char *session_id);
 
 /**
- * 解码 Claude 目录名为项目路径
- * -Users-xxx-project → /Users/xxx/project
+ * 获取项目的编码目录名
+ *
+ * 通过 project_path 查询对应的编码目录名。
+ *
+ * # 参数
+ * - `projects_path`: Claude projects 目录路径，null 使用默认路径
+ * - `project_path`: 项目路径
+ *
+ * # 返回
+ * - 成功：返回编码后的目录名
+ * - 失败（未找到）：返回 null
  *
  * # Safety
- * - `encoded` 必须是有效的 UTF-8 C 字符串
  * - 返回的字符串需要调用 `session_db_free_string` 释放
  */
-char *session_db_decode_path(const char *encoded);
+char *session_db_get_encoded_dir_name(const char *projects_path, const char *project_path);
 
 /**
  * 列出所有项目（从文件系统）
+ *
+ * 会话数量不包含 agent session。
  *
  * # 参数
  * - `projects_path`: Claude projects 目录路径，null 使用默认路径 (~/.claude/projects)
@@ -508,6 +527,8 @@ void session_db_free_project_list(struct ProjectInfoArray *array);
 
 /**
  * 列出会话
+ *
+ * 默认过滤 agent session (agent-xxx)。
  *
  * # 参数
  * - `projects_path`: Claude projects 目录路径，null 使用默认路径

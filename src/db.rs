@@ -3,7 +3,7 @@
 use crate::config::{ConnectionMode, DbConfig};
 use crate::error::{Error, Result};
 use crate::schema;
-use crate::types::{Message, Project, Session, Stats};
+use crate::types::{Message, Project, ProjectWithStats, Session, Stats};
 use ai_cli_session_collector::MessageType;
 use parking_lot::Mutex;
 use rusqlite::{params, Connection, OptionalExtension};
@@ -124,6 +124,17 @@ impl SessionDB {
 
     /// 获取或创建 Project
     pub fn get_or_create_project(&self, name: &str, path: &str, source: &str) -> Result<i64> {
+        self.get_or_create_project_with_encoded(name, path, source, None)
+    }
+
+    /// 获取或创建 Project（支持 encoded_dir_name）
+    pub fn get_or_create_project_with_encoded(
+        &self,
+        name: &str,
+        path: &str,
+        source: &str,
+        encoded_dir_name: Option<&str>,
+    ) -> Result<i64> {
         let conn = self.conn.lock();
 
         // 先查找
@@ -136,20 +147,27 @@ impl SessionDB {
             .optional()?;
 
         if let Some(id) = existing {
-            // 更新 updated_at
+            // 更新 updated_at，如果有 encoded_dir_name 也一并更新
             let now = current_time_ms();
-            conn.execute(
-                "UPDATE projects SET updated_at = ?1 WHERE id = ?2",
-                params![now, id],
-            )?;
+            if let Some(encoded) = encoded_dir_name {
+                conn.execute(
+                    "UPDATE projects SET updated_at = ?1, encoded_dir_name = COALESCE(?2, encoded_dir_name) WHERE id = ?3",
+                    params![now, encoded, id],
+                )?;
+            } else {
+                conn.execute(
+                    "UPDATE projects SET updated_at = ?1 WHERE id = ?2",
+                    params![now, id],
+                )?;
+            }
             return Ok(id);
         }
 
         // 创建
         let now = current_time_ms();
         conn.execute(
-            "INSERT INTO projects (name, path, source, created_at, updated_at) VALUES (?1, ?2, ?3, ?4, ?4)",
-            params![name, path, source, now],
+            "INSERT INTO projects (name, path, source, encoded_dir_name, created_at, updated_at) VALUES (?1, ?2, ?3, ?4, ?5, ?5)",
+            params![name, path, source, encoded_dir_name, now],
         )?;
 
         Ok(conn.last_insert_rowid())
@@ -159,7 +177,7 @@ impl SessionDB {
     pub fn list_projects(&self) -> Result<Vec<Project>> {
         let conn = self.conn.lock();
         let mut stmt = conn.prepare(
-            "SELECT id, name, path, source, created_at, updated_at FROM projects ORDER BY updated_at DESC",
+            "SELECT id, name, path, source, encoded_dir_name, created_at, updated_at FROM projects ORDER BY updated_at DESC",
         )?;
 
         let rows = stmt.query_map([], |row| {
@@ -168,8 +186,43 @@ impl SessionDB {
                 name: row.get(1)?,
                 path: row.get(2)?,
                 source: row.get(3)?,
-                created_at: row.get(4)?,
-                updated_at: row.get(5)?,
+                encoded_dir_name: row.get(4)?,
+                created_at: row.get(5)?,
+                updated_at: row.get(6)?,
+            })
+        })?;
+
+        rows.collect::<std::result::Result<Vec<_>, _>>()
+            .map_err(Into::into)
+    }
+
+    /// 获取所有 Projects（带统计信息）
+    pub fn list_projects_with_stats(&self) -> Result<Vec<ProjectWithStats>> {
+        let conn = self.conn.lock();
+        let mut stmt = conn.prepare(
+            r#"
+            SELECT
+                p.id,
+                p.name,
+                p.path,
+                COUNT(DISTINCT s.id) as session_count,
+                COALESCE(SUM(s.message_count), 0) as message_count,
+                MAX(s.last_message_at) as last_active
+            FROM projects p
+            LEFT JOIN sessions s ON s.project_id = p.id
+            GROUP BY p.id
+            ORDER BY last_active DESC NULLS LAST
+            "#,
+        )?;
+
+        let rows = stmt.query_map([], |row| {
+            Ok(ProjectWithStats {
+                id: row.get(0)?,
+                name: row.get(1)?,
+                path: row.get(2)?,
+                session_count: row.get(3)?,
+                message_count: row.get(4)?,
+                last_active: row.get(5)?,
             })
         })?;
 
@@ -181,7 +234,7 @@ impl SessionDB {
     pub fn get_project(&self, id: i64) -> Result<Option<Project>> {
         let conn = self.conn.lock();
         conn.query_row(
-            "SELECT id, name, path, source, created_at, updated_at FROM projects WHERE id = ?1",
+            "SELECT id, name, path, source, encoded_dir_name, created_at, updated_at FROM projects WHERE id = ?1",
             params![id],
             |row| {
                 Ok(Project {
@@ -189,8 +242,9 @@ impl SessionDB {
                     name: row.get(1)?,
                     path: row.get(2)?,
                     source: row.get(3)?,
-                    created_at: row.get(4)?,
-                    updated_at: row.get(5)?,
+                    encoded_dir_name: row.get(4)?,
+                    created_at: row.get(5)?,
+                    updated_at: row.get(6)?,
                 })
             },
         )
@@ -342,6 +396,17 @@ impl SessionDB {
         let conn = self.conn.lock();
         conn.query_row(
             "SELECT COUNT(*) FROM messages WHERE session_id = ?1",
+            params![session_id],
+            |row| row.get(0),
+        )
+        .map_err(Into::into)
+    }
+
+    /// 获取 Session 的最新消息时间戳（毫秒）
+    pub fn get_session_latest_timestamp(&self, session_id: &str) -> Result<Option<i64>> {
+        let conn = self.conn.lock();
+        conn.query_row(
+            "SELECT MAX(timestamp) FROM messages WHERE session_id = ?1",
             params![session_id],
             |row| row.get(0),
         )

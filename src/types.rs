@@ -10,6 +10,7 @@ pub struct Project {
     pub name: String,
     pub path: String,
     pub source: String,
+    pub encoded_dir_name: Option<String>,
     pub created_at: i64,
     pub updated_at: i64,
 }
@@ -92,4 +93,15 @@ pub struct Stats {
     pub project_count: i64,
     pub session_count: i64,
     pub message_count: i64,
+}
+
+/// 项目（带统计信息）
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ProjectWithStats {
+    pub id: i64,
+    pub name: String,
+    pub path: String,
+    pub session_count: i64,
+    pub message_count: i64,
+    pub last_active: Option<i64>,  // 最后活跃时间（毫秒时间戳）
 }

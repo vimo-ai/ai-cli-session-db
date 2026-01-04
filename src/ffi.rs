@@ -1,9 +1,10 @@
 //! C FFI 导出 (Swift 绑定用)
 //!
 //! 为 MemexKit / VlaudeKit 提供 C ABI 接口
+//!
+//! FFI 层只做类型转换，业务逻辑统一在 reader 模块实现。
 
 use std::ffi::{CStr, CString};
-use std::fs;
 use std::os::raw::c_char;
 use std::panic::{self, AssertUnwindSafe};
 use std::path::PathBuf;
@@ -11,6 +12,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use crate::config::DbConfig;
 use crate::db::{MessageInput, SessionDB};
+use crate::reader::SessionReader;
 use ai_cli_session_collector::MessageType;
 use crate::{ClaudeAdapter, ConversationAdapter};
 
@@ -35,22 +37,26 @@ pub struct SessionDbHandle {
 /// 连接数据库
 ///
 /// # Safety
-/// `path` 必须是有效的 C 字符串
+/// `path` 可以为 null（使用默认路径），或有效的 C 字符串
 #[no_mangle]
 pub unsafe extern "C" fn session_db_connect(
     path: *const c_char,
     out_handle: *mut *mut SessionDbHandle,
 ) -> SessionDbError {
-    if path.is_null() || out_handle.is_null() {
+    if out_handle.is_null() {
         return SessionDbError::NullPointer;
     }
 
-    let path_str = match CStr::from_ptr(path).to_str() {
-        Ok(s) => s,
-        Err(_) => return SessionDbError::InvalidUtf8,
+    // path 为 null 时使用默认配置
+    let config = if path.is_null() {
+        DbConfig::from_env()
+    } else {
+        match CStr::from_ptr(path).to_str() {
+            Ok(s) => DbConfig::local(s),
+            Err(_) => return SessionDbError::InvalidUtf8,
+        }
     };
 
-    let config = DbConfig::local(path_str);
     match SessionDB::connect(config) {
         Ok(db) => {
             let handle = Box::new(SessionDbHandle { db });
@@ -1310,59 +1316,110 @@ pub unsafe extern "C" fn session_db_free_parse_result(session: *mut IndexableSes
     }
 }
 
-// ==================== 路径编解码 ====================
+// ==================== 路径查询 ====================
 
-/// 编码项目路径为 Claude 目录名
-/// /Users/xxx/project → -Users-xxx-project
+/// 获取会话文件路径
+///
+/// 通过 session_id 查询完整的文件路径。
+/// 这是 `encode_path` 的替代方案，从缓存/数据库获取而不是计算。
+///
+/// # 参数
+/// - `projects_path`: Claude projects 目录路径，null 使用默认路径
+/// - `session_id`: 会话 ID
+///
+/// # 返回
+/// - 成功：返回完整的 session 文件路径
+/// - 失败（未找到）：返回 null
 ///
 /// # Safety
-/// - `path` 必须是有效的 UTF-8 C 字符串
 /// - 返回的字符串需要调用 `session_db_free_string` 释放
 #[no_mangle]
-pub unsafe extern "C" fn session_db_encode_path(path: *const c_char) -> *mut c_char {
-    if path.is_null() {
+pub unsafe extern "C" fn session_db_get_session_path(
+    projects_path: *const c_char,
+    session_id: *const c_char,
+) -> *mut c_char {
+    if session_id.is_null() {
         return std::ptr::null_mut();
     }
 
-    let path_str = match CStr::from_ptr(path).to_str() {
+    let session_id_str = match CStr::from_ptr(session_id).to_str() {
         Ok(s) => s,
         Err(_) => return std::ptr::null_mut(),
     };
 
-    let encoded = if path_str.starts_with('/') {
-        format!("-{}", &path_str[1..].replace('/', "-"))
+    let path = if projects_path.is_null() {
+        let home = match std::env::var("HOME") {
+            Ok(h) => h,
+            Err(_) => return std::ptr::null_mut(),
+        };
+        PathBuf::from(home).join(".claude/projects")
     } else {
-        path_str.replace('/', "-")
+        let path_str = match CStr::from_ptr(projects_path).to_str() {
+            Ok(s) => s,
+            Err(_) => return std::ptr::null_mut(),
+        };
+        PathBuf::from(path_str)
     };
 
-    match CString::new(encoded) {
-        Ok(s) => s.into_raw(),
-        Err(_) => std::ptr::null_mut(),
+    let mut reader = SessionReader::new(path);
+    match reader.get_session_path(session_id_str) {
+        Some(session_path) => match CString::new(session_path) {
+            Ok(s) => s.into_raw(),
+            Err(_) => std::ptr::null_mut(),
+        },
+        None => std::ptr::null_mut(),
     }
 }
 
-/// 解码 Claude 目录名为项目路径
-/// -Users-xxx-project → /Users/xxx/project
+/// 获取项目的编码目录名
+///
+/// 通过 project_path 查询对应的编码目录名。
+///
+/// # 参数
+/// - `projects_path`: Claude projects 目录路径，null 使用默认路径
+/// - `project_path`: 项目路径
+///
+/// # 返回
+/// - 成功：返回编码后的目录名
+/// - 失败（未找到）：返回 null
 ///
 /// # Safety
-/// - `encoded` 必须是有效的 UTF-8 C 字符串
 /// - 返回的字符串需要调用 `session_db_free_string` 释放
 #[no_mangle]
-pub unsafe extern "C" fn session_db_decode_path(encoded: *const c_char) -> *mut c_char {
-    if encoded.is_null() {
+pub unsafe extern "C" fn session_db_get_encoded_dir_name(
+    projects_path: *const c_char,
+    project_path: *const c_char,
+) -> *mut c_char {
+    if project_path.is_null() {
         return std::ptr::null_mut();
     }
 
-    let encoded_str = match CStr::from_ptr(encoded).to_str() {
+    let project_path_str = match CStr::from_ptr(project_path).to_str() {
         Ok(s) => s,
         Err(_) => return std::ptr::null_mut(),
     };
 
-    let decoded = ClaudeAdapter::decode_path(encoded_str);
+    let path = if projects_path.is_null() {
+        let home = match std::env::var("HOME") {
+            Ok(h) => h,
+            Err(_) => return std::ptr::null_mut(),
+        };
+        PathBuf::from(home).join(".claude/projects")
+    } else {
+        let path_str = match CStr::from_ptr(projects_path).to_str() {
+            Ok(s) => s,
+            Err(_) => return std::ptr::null_mut(),
+        };
+        PathBuf::from(path_str)
+    };
 
-    match CString::new(decoded) {
-        Ok(s) => s.into_raw(),
-        Err(_) => std::ptr::null_mut(),
+    let mut reader = SessionReader::new(path);
+    match reader.get_encoded_dir_name(project_path_str) {
+        Some(encoded) => match CString::new(encoded) {
+            Ok(s) => s.into_raw(),
+            Err(_) => std::ptr::null_mut(),
+        },
+        None => std::ptr::null_mut(),
     }
 }
 
@@ -1386,6 +1443,8 @@ pub struct ProjectInfoArray {
 }
 
 /// 列出所有项目（从文件系统）
+///
+/// 会话数量不包含 agent session。
 ///
 /// # 参数
 /// - `projects_path`: Claude projects 目录路径，null 使用默认路径 (~/.claude/projects)
@@ -1415,88 +1474,30 @@ pub unsafe extern "C" fn session_db_list_file_projects(
             PathBuf::from(path_str)
         };
 
-        if !path.exists() {
-            // 目录不存在，返回空数组
-            return Ok(Vec::new());
-        }
+        // 使用 SessionReader 统一的业务逻辑
+        let mut reader = SessionReader::new(path);
+        let limit_opt = if limit > 0 { Some(limit as usize) } else { None };
+        let projects = reader.list_projects(limit_opt);
 
-        let mut results = Vec::new();
-
-        for entry in fs::read_dir(&path).map_err(|_| SessionDbError::DatabaseError)? {
-            let entry = entry.map_err(|_| SessionDbError::DatabaseError)?;
-            let project_dir = entry.path();
-
-            if !project_dir.is_dir() {
-                continue;
-            }
-
-            let encoded_name = project_dir
-                .file_name()
-                .and_then(|s| s.to_str())
-                .unwrap_or_default();
-
-            if encoded_name.is_empty() || encoded_name.starts_with('.') {
-                continue;
-            }
-
-            let decoded_path = ClaudeAdapter::decode_path(encoded_name);
-            let project_name = ClaudeAdapter::extract_project_name(&decoded_path);
-
-            // 统计会话数量和最后活跃时间
-            let mut session_count = 0usize;
-            let mut last_active: u64 = 0;
-
-            if let Ok(files) = fs::read_dir(&project_dir) {
-                for file_entry in files.flatten() {
-                    let file_path = file_entry.path();
-                    if file_path.is_file()
-                        && file_path.extension().map(|e| e == "jsonl").unwrap_or(false)
-                    {
-                        session_count += 1;
-
-                        if let Ok(meta) = fs::metadata(&file_path) {
-                            if let Ok(mtime) = meta.modified() {
-                                let ts = mtime
-                                    .duration_since(UNIX_EPOCH)
-                                    .map(|d| d.as_millis() as u64)
-                                    .unwrap_or(0);
-                                last_active = last_active.max(ts);
-                            }
-                        }
-                    }
-                }
-            }
-
-            results.push((encoded_name.to_string(), decoded_path, project_name, session_count, last_active));
-        }
-
-        // 按最后活跃时间排序（降序）
-        results.sort_by(|a, b| b.4.cmp(&a.4));
-
-        // 应用 limit
-        if limit > 0 {
-            results.truncate(limit as usize);
-        }
-
-        Ok(results)
+        Ok(projects)
     }));
 
     match result {
         Ok(Ok(projects)) => {
             let mut c_projects: Vec<ProjectInfoC> = Vec::new();
-            for (encoded_name, path, name, session_count, last_active) in projects {
-                let encoded_name_c = match CString::new(encoded_name) {
+            for p in projects {
+                let encoded_name_c = match CString::new(p.encoded_name) {
                     Ok(s) => s.into_raw(),
                     Err(_) => continue,
                 };
-                let path_c = match CString::new(path) {
+                let path_c = match CString::new(p.path) {
                     Ok(s) => s.into_raw(),
                     Err(_) => {
                         drop(CString::from_raw(encoded_name_c));
                         continue;
                     }
                 };
-                let name_c = match CString::new(name) {
+                let name_c = match CString::new(p.name) {
                     Ok(s) => s.into_raw(),
                     Err(_) => {
                         drop(CString::from_raw(encoded_name_c));
@@ -1509,8 +1510,8 @@ pub unsafe extern "C" fn session_db_list_file_projects(
                     encoded_name: encoded_name_c,
                     path: path_c,
                     name: name_c,
-                    session_count,
-                    last_active,
+                    session_count: p.session_count,
+                    last_active: p.last_active.unwrap_or(0),
                 });
             }
 
@@ -1576,6 +1577,8 @@ pub struct SessionMetaArray {
 
 /// 列出会话
 ///
+/// 默认过滤 agent session (agent-xxx)。
+///
 /// # 参数
 /// - `projects_path`: Claude projects 目录路径，null 使用默认路径
 /// - `project_path`: 可选，过滤特定项目的会话
@@ -1604,36 +1607,21 @@ pub unsafe extern "C" fn session_db_list_session_metas(
             PathBuf::from(path_str)
         };
 
-        let filter_project = if project_path.is_null() {
+        let filter_project: Option<&str> = if project_path.is_null() {
             None
         } else {
             Some(
                 CStr::from_ptr(project_path)
                     .to_str()
-                    .map_err(|_| SessionDbError::InvalidUtf8)?
-                    .to_string(),
+                    .map_err(|_| SessionDbError::InvalidUtf8)?,
             )
         };
 
-        // 使用 ClaudeAdapter
-        let adapter = ClaudeAdapter::new(path);
-        let sessions = adapter.list_sessions().map_err(|_| SessionDbError::DatabaseError)?;
+        // 使用 SessionReader 统一的业务逻辑（默认过滤 agent session）
+        let mut reader = SessionReader::new(path);
+        let sessions = reader.list_sessions(filter_project, false); // include_agents = false
 
-        // 过滤和排序
-        let mut filtered: Vec<_> = sessions
-            .into_iter()
-            .filter(|s| {
-                if let Some(ref filter) = filter_project {
-                    &s.project_path == filter
-                } else {
-                    true
-                }
-            })
-            .collect();
-
-        filtered.sort_by(|a, b| b.file_mtime.cmp(&a.file_mtime));
-
-        Ok(filtered)
+        Ok(sessions)
     }));
 
     match result {
@@ -1951,9 +1939,10 @@ pub unsafe extern "C" fn session_db_read_session_messages(
             all_messages.reverse();
         }
 
-        // 分页
+        // 分页（limit=0 表示无限制）
         let start = offset.min(total);
-        let end = (offset + limit).min(total);
+        let actual_limit = if limit == 0 { usize::MAX } else { limit };
+        let end = start.saturating_add(actual_limit).min(total);
         let messages: Vec<_> = all_messages[start..end].to_vec();
 
         Ok((messages, total))

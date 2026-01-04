@@ -46,10 +46,10 @@ impl DbConfig {
             return Self::local(url);
         }
 
-        // 默认路径: ~/.claude-session/db.sqlite
+        // 默认路径: ~/.vimo/db/ai-cli-session.db
         let default_path = dirs::home_dir()
-            .map(|h| h.join(".claude-session").join("db.sqlite"))
-            .unwrap_or_else(|| PathBuf::from("claude-session.db"));
+            .map(|h| h.join(".vimo").join("db").join("ai-cli-session.db"))
+            .unwrap_or_else(|| PathBuf::from("ai-cli-session.db"));
 
         Self::local(default_path)
     }

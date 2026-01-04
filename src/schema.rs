@@ -8,6 +8,7 @@ CREATE TABLE IF NOT EXISTS projects (
     path TEXT NOT NULL UNIQUE,
     name TEXT NOT NULL,
     source TEXT NOT NULL DEFAULT 'claude',
+    encoded_dir_name TEXT,
     created_at INTEGER NOT NULL DEFAULT (strftime('%s', 'now') * 1000),
     updated_at INTEGER NOT NULL DEFAULT (strftime('%s', 'now') * 1000)
 );
