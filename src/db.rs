@@ -812,6 +812,103 @@ impl SessionDB {
         .map_err(Into::into)
     }
 
+    /// 标记消息向量索引失败
+    /// vector_indexed = -1 表示失败
+    pub fn mark_message_index_failed(&self, message_id: i64) -> Result<()> {
+        let conn = self.conn.lock();
+        conn.execute(
+            "UPDATE messages SET vector_indexed = -1 WHERE id = ?1",
+            params![message_id],
+        )?;
+        Ok(())
+    }
+
+    /// 批量标记消息向量索引失败
+    pub fn mark_messages_index_failed(&self, message_ids: &[i64]) -> Result<usize> {
+        if message_ids.is_empty() {
+            return Ok(0);
+        }
+
+        let conn = self.conn.lock();
+        let placeholders: String = message_ids.iter().map(|_| "?").collect::<Vec<_>>().join(",");
+        let sql = format!(
+            "UPDATE messages SET vector_indexed = -1 WHERE id IN ({})",
+            placeholders
+        );
+
+        let mut stmt = conn.prepare(&sql)?;
+        let params: Vec<&dyn rusqlite::ToSql> = message_ids
+            .iter()
+            .map(|id| id as &dyn rusqlite::ToSql)
+            .collect();
+
+        let count = stmt.execute(params.as_slice())?;
+        Ok(count)
+    }
+
+    /// 获取索引失败的消息
+    /// vector_indexed = -1 表示失败
+    pub fn get_failed_indexed_messages(&self, limit: usize) -> Result<Vec<Message>> {
+        let conn = self.conn.lock();
+        let mut stmt = conn.prepare(
+            r#"
+            SELECT id, session_id, uuid, type, content_text, content_full, timestamp, sequence,
+                   source, channel, model, tool_call_id, tool_name, tool_args, raw, vector_indexed
+            FROM messages
+            WHERE vector_indexed = -1
+            ORDER BY id ASC
+            LIMIT ?1
+            "#,
+        )?;
+
+        let rows = stmt.query_map(params![limit as i64], |row| {
+            let type_str: String = row.get(3)?;
+            let vector_indexed: i64 = row.get(15)?;
+            Ok(Message {
+                id: row.get(0)?,
+                session_id: row.get(1)?,
+                uuid: row.get(2)?,
+                r#type: type_str.parse().unwrap_or(MessageType::User),
+                content_text: row.get(4)?,
+                content_full: row.get(5)?,
+                timestamp: row.get(6)?,
+                sequence: row.get(7)?,
+                source: row.get(8)?,
+                channel: row.get(9)?,
+                model: row.get(10)?,
+                tool_call_id: row.get(11)?,
+                tool_name: row.get(12)?,
+                tool_args: row.get(13)?,
+                raw: row.get(14)?,
+                vector_indexed: vector_indexed != 0,
+            })
+        })?;
+
+        rows.collect::<std::result::Result<Vec<_>, _>>()
+            .map_err(Into::into)
+    }
+
+    /// 统计索引失败的消息数量
+    pub fn count_failed_indexed_messages(&self) -> Result<i64> {
+        let conn = self.conn.lock();
+        conn.query_row(
+            "SELECT COUNT(*) FROM messages WHERE vector_indexed = -1",
+            [],
+            |row| row.get(0),
+        )
+        .map_err(Into::into)
+    }
+
+    /// 重置失败的索引状态（将 -1 改为 0，可重新索引）
+    pub fn reset_failed_indexed_messages(&self) -> Result<usize> {
+        let conn = self.conn.lock();
+        let count = conn.execute(
+            "UPDATE messages SET vector_indexed = 0 WHERE vector_indexed = -1",
+            [],
+        )?;
+        Ok(count)
+    }
+
     /// 按 ID 列表获取消息
     pub fn get_messages_by_ids(&self, ids: &[i64]) -> Result<Vec<Message>> {
         if ids.is_empty() {
