@@ -191,6 +191,7 @@ typedef struct SessionMetaC {
     char *encoded_dir_name;
     char *session_path;
     int64_t file_mtime;
+    int64_t message_count;
 } SessionMetaC;
 
 /**

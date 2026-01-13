@@ -279,12 +279,13 @@ impl SessionDB {
 
         conn.execute(
             r#"
-            INSERT INTO sessions (session_id, project_id, cwd, model, channel, file_mtime, file_size, encoded_dir_name, meta, created_at, updated_at)
-            VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?10)
+            INSERT INTO sessions (session_id, project_id, cwd, model, channel, message_count, file_mtime, file_size, encoded_dir_name, meta, created_at, updated_at)
+            VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?11)
             ON CONFLICT(session_id) DO UPDATE SET
                 cwd = COALESCE(excluded.cwd, sessions.cwd),
                 model = COALESCE(excluded.model, sessions.model),
                 channel = COALESCE(excluded.channel, sessions.channel),
+                message_count = COALESCE(excluded.message_count, sessions.message_count),
                 file_mtime = COALESCE(excluded.file_mtime, sessions.file_mtime),
                 file_size = COALESCE(excluded.file_size, sessions.file_size),
                 encoded_dir_name = COALESCE(excluded.encoded_dir_name, sessions.encoded_dir_name),
@@ -297,6 +298,7 @@ impl SessionDB {
                 input.cwd,
                 input.model,
                 input.channel,
+                input.message_count,
                 input.file_mtime,
                 input.file_size,
                 input.encoded_dir_name,
@@ -1103,6 +1105,7 @@ pub struct SessionInput {
     pub cwd: Option<String>,
     pub model: Option<String>,
     pub channel: Option<String>,
+    pub message_count: Option<i64>,
     // 增量检测字段
     pub file_mtime: Option<i64>,
     pub file_size: Option<i64>,

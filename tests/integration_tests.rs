@@ -195,7 +195,8 @@ mod message_tests {
             .map(|i| MessageInput {
                 uuid: format!("uuid-{}", i),
                 r#type: if i % 2 == 0 { MessageType::User } else { MessageType::Assistant },
-                content: format!("Message content {}", i),
+                content_text: format!("Message content {}", i),
+                content_full: format!("Message content {}", i),
                 timestamp: 1000000 + i as i64,
                 sequence: i as i64,
                 source: None,
@@ -285,7 +286,8 @@ mod message_tests {
             MessageInput {
                 uuid: "uuid-1".to_string(),
                 r#type: MessageType::User,
-                content: "Hello".to_string(),
+                content_text: "Hello".to_string(),
+                content_full: "Hello".to_string(),
                 timestamp: 1000,
                 sequence: 0,
                 source: None,
@@ -299,7 +301,8 @@ mod message_tests {
             MessageInput {
                 uuid: "uuid-2".to_string(),
                 r#type: MessageType::Assistant,
-                content: "Hi there".to_string(),
+                content_text: "Hi there".to_string(),
+                content_full: "Hi there".to_string(),
                 timestamp: 1001,
                 sequence: 1,
                 source: None,
@@ -335,7 +338,8 @@ mod incremental_scan_tests {
             .map(|i| MessageInput {
                 uuid: format!("uuid-{}", i),
                 r#type: MessageType::User,
-                content: format!("Content {}", i),
+                content_text: format!("Content {}", i),
+                content_full: format!("Content {}", i),
                 timestamp: 1000000 + i as i64 * 1000,
                 sequence: i as i64,
                 source: None,
@@ -364,7 +368,8 @@ mod incremental_scan_tests {
             .map(|i| MessageInput {
                 uuid: format!("uuid-{}", i),
                 r#type: MessageType::User,
-                content: format!("Content {}", i),
+                content_text: format!("Content {}", i),
+                content_full: format!("Content {}", i),
                 timestamp: 1000000 + i as i64 * 1000,
                 sequence: i as i64,
                 source: None,
@@ -384,7 +389,8 @@ mod incremental_scan_tests {
             .map(|i| MessageInput {
                 uuid: format!("uuid-{}", i),
                 r#type: MessageType::User,
-                content: format!("Content {}", i),
+                content_text: format!("Content {}", i),
+                content_full: format!("Content {}", i),
                 timestamp: 1000000 + i as i64 * 1000,
                 sequence: i as i64,
                 source: None,
@@ -416,7 +422,8 @@ mod incremental_scan_tests {
         let messages1 = vec![MessageInput {
             uuid: "uuid-1".to_string(),
             r#type: MessageType::User,
-            content: "First".to_string(),
+            content_text: "First".to_string(),
+            content_full: "First".to_string(),
             timestamp: 1000000,
             sequence: 0,
             source: None,
@@ -434,7 +441,8 @@ mod incremental_scan_tests {
             MessageInput {
                 uuid: "uuid-1".to_string(), // 旧消息
                 r#type: MessageType::User,
-                content: "First".to_string(),
+                content_text: "First".to_string(),
+                content_full: "First".to_string(),
                 timestamp: 1000000,
                 sequence: 0,
                 source: None,
@@ -448,7 +456,8 @@ mod incremental_scan_tests {
             MessageInput {
                 uuid: "uuid-2".to_string(), // 新消息，但时间戳在检查点附近
                 r#type: MessageType::User,
-                content: "Second".to_string(),
+                content_text: "Second".to_string(),
+                content_full: "Second".to_string(),
                 timestamp: 1000000 - 30000, // 检查点前 30 秒（在安全边界 60s 内）
                 sequence: 1,
                 source: None,
@@ -486,7 +495,8 @@ mod search_tests {
             MessageInput {
                 uuid: "uuid-1".to_string(),
                 r#type: MessageType::User,
-                content: "How do I implement a binary search tree in Rust?".to_string(),
+                content_text: "How do I implement a binary search tree in Rust?".to_string(),
+                content_full: "How do I implement a binary search tree in Rust?".to_string(),
                 timestamp: 1000,
                 sequence: 0,
                 source: None,
@@ -500,7 +510,8 @@ mod search_tests {
             MessageInput {
                 uuid: "uuid-2".to_string(),
                 r#type: MessageType::Assistant,
-                content: "Here's how to implement a binary search tree...".to_string(),
+                content_text: "Here's how to implement a binary search tree...".to_string(),
+                content_full: "Here's how to implement a binary search tree...".to_string(),
                 timestamp: 1001,
                 sequence: 1,
                 source: None,
@@ -514,7 +525,8 @@ mod search_tests {
             MessageInput {
                 uuid: "uuid-3".to_string(),
                 r#type: MessageType::User,
-                content: "What about hash maps?".to_string(),
+                content_text: "What about hash maps?".to_string(),
+                content_full: "What about hash maps?".to_string(),
                 timestamp: 1002,
                 sequence: 2,
                 source: None,
@@ -555,7 +567,8 @@ mod search_tests {
         db.insert_messages("session-1", &[MessageInput {
             uuid: "uuid-1".to_string(),
             r#type: MessageType::User,
-            content: "Rust programming".to_string(),
+            content_text: "Rust programming".to_string(),
+            content_full: "Rust programming".to_string(),
             timestamp: 1000,
             sequence: 0,
             source: None,
@@ -570,7 +583,8 @@ mod search_tests {
         db.insert_messages("session-2", &[MessageInput {
             uuid: "uuid-2".to_string(),
             r#type: MessageType::User,
-            content: "Rust programming".to_string(),
+            content_text: "Rust programming".to_string(),
+            content_full: "Rust programming".to_string(),
             timestamp: 1000,
             sequence: 0,
             source: None,
@@ -604,7 +618,8 @@ mod search_tests {
             .map(|i| MessageInput {
                 uuid: format!("uuid-{}", i),
                 r#type: MessageType::User,
-                content: format!("This is test message {}", i),
+                content_text: format!("This is test message {}", i),
+                content_full: format!("This is test message {}", i),
                 timestamp: 1000 + i as i64,
                 sequence: i as i64,
                 source: None,
@@ -660,7 +675,8 @@ mod stats_tests {
             .map(|i| MessageInput {
                 uuid: format!("uuid-{}", i),
                 r#type: MessageType::User,
-                content: "test".to_string(),
+                content_text: "test".to_string(),
+                content_full: "test".to_string(),
                 timestamp: i as i64,
                 sequence: i as i64,
                 source: None,
@@ -786,7 +802,8 @@ mod edge_case_tests {
         let messages = vec![MessageInput {
             uuid: "uuid-empty".to_string(),
             r#type: MessageType::User,
-            content: "".to_string(), // 空内容
+            content_text: "".to_string(), // 空内容
+            content_full: "".to_string(),
             timestamp: 1000,
             sequence: 0,
             source: None,
@@ -802,7 +819,7 @@ mod edge_case_tests {
         assert_eq!(inserted, 1);
 
         let loaded = db.list_messages("session-001", 10, 0).unwrap();
-        assert_eq!(loaded[0].content, "");
+        assert_eq!(loaded[0].content_text, "");
     }
 
     #[test]
@@ -815,7 +832,8 @@ mod edge_case_tests {
         let messages = vec![MessageInput {
             uuid: "uuid-unicode".to_string(),
             r#type: MessageType::User,
-            content: "你好世界 🌍 مرحبا العالم 🎉 こんにちは".to_string(),
+            content_text: "你好世界 🌍 مرحبا العالم 🎉 こんにちは".to_string(),
+            content_full: "你好世界 🌍 مرحبا العالم 🎉 こんにちは".to_string(),
             timestamp: 1000,
             sequence: 0,
             source: None,
@@ -830,7 +848,7 @@ mod edge_case_tests {
         db.insert_messages("session-001", &messages).unwrap();
 
         let loaded = db.list_messages("session-001", 10, 0).unwrap();
-        assert_eq!(loaded[0].content, "你好世界 🌍 مرحبا العالم 🎉 こんにちは");
+        assert_eq!(loaded[0].content_text, "你好世界 🌍 مرحبا العالم 🎉 こんにちは");
 
         // 项目名也应该正确
         let projects = db.list_projects().unwrap();
@@ -850,7 +868,8 @@ mod edge_case_tests {
         let messages = vec![MessageInput {
             uuid: "uuid-long".to_string(),
             r#type: MessageType::Assistant,
-            content: long_content.clone(),
+            content_text: long_content.clone(),
+            content_full: long_content.clone(),
             timestamp: 1000,
             sequence: 0,
             source: None,
@@ -865,7 +884,7 @@ mod edge_case_tests {
         db.insert_messages("session-001", &messages).unwrap();
 
         let loaded = db.list_messages("session-001", 10, 0).unwrap();
-        assert_eq!(loaded[0].content.len(), 100 * 1024);
+        assert_eq!(loaded[0].content_text.len(), 100 * 1024);
     }
 
     #[test]
@@ -919,7 +938,8 @@ mod edge_case_tests {
             .map(|i| MessageInput {
                 uuid: format!("uuid-{}", i),
                 r#type: if i % 2 == 0 { MessageType::User } else { MessageType::Assistant },
-                content: format!("Message {}", i),
+                content_text: format!("Message {}", i),
+                content_full: format!("Message {}", i),
                 timestamp: i as i64,
                 sequence: i as i64,
                 source: None,
@@ -951,7 +971,8 @@ mod edge_case_tests {
             MessageInput {
                 uuid: "uuid-3".to_string(),
                 r#type: MessageType::User,
-                content: "Third".to_string(),
+                content_text: "Third".to_string(),
+                content_full: "Third".to_string(),
                 timestamp: 3000,
                 sequence: 2,
                 source: None,
@@ -965,7 +986,8 @@ mod edge_case_tests {
             MessageInput {
                 uuid: "uuid-1".to_string(),
                 r#type: MessageType::User,
-                content: "First".to_string(),
+                content_text: "First".to_string(),
+                content_full: "First".to_string(),
                 timestamp: 1000,
                 sequence: 0,
                 source: None,
@@ -979,7 +1001,8 @@ mod edge_case_tests {
             MessageInput {
                 uuid: "uuid-2".to_string(),
                 r#type: MessageType::User,
-                content: "Second".to_string(),
+                content_text: "Second".to_string(),
+                content_full: "Second".to_string(),
                 timestamp: 2000,
                 sequence: 1,
                 source: None,
@@ -996,9 +1019,9 @@ mod edge_case_tests {
 
         // 按 sequence 排序返回
         let loaded = db.list_messages("session-001", 10, 0).unwrap();
-        assert_eq!(loaded[0].content, "First");
-        assert_eq!(loaded[1].content, "Second");
-        assert_eq!(loaded[2].content, "Third");
+        assert_eq!(loaded[0].content_text, "First");
+        assert_eq!(loaded[1].content_text, "Second");
+        assert_eq!(loaded[2].content_text, "Third");
     }
 }
 
@@ -1006,8 +1029,7 @@ mod edge_case_tests {
 
 #[cfg(feature = "writer")]
 mod writer_conversion_tests {
-    use super::*;
-    use ai_cli_session_collector::{MessageType, ParsedMessage, Source};
+    use ai_cli_session_collector::{MessageType, ParsedContent, ParsedMessage, Source};
     use claude_session_db::writer::{convert_message, convert_messages};
 
     fn create_parsed_message(uuid: &str, msg_type: MessageType, content: &str) -> ParsedMessage {
@@ -1015,7 +1037,10 @@ mod writer_conversion_tests {
             uuid: uuid.to_string(),
             session_id: "session-001".to_string(),
             message_type: msg_type,
-            content: content.to_string(),
+            content: ParsedContent {
+                text: content.to_string(),
+                full: content.to_string(),
+            },
             timestamp: Some("2024-01-15T10:30:00Z".to_string()),
             source: Source::Claude,
             channel: Some("code".to_string()),
@@ -1034,7 +1059,7 @@ mod writer_conversion_tests {
 
         assert_eq!(input.uuid, "uuid-1");
         assert_eq!(input.r#type, MessageType::User);
-        assert_eq!(input.content, "Hello");
+        assert_eq!(input.content_text, "Hello");
         assert_eq!(input.sequence, 0);
         // timestamp 应该被解析为毫秒
         assert!(input.timestamp > 0);

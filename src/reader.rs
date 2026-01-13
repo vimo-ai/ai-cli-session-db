@@ -383,6 +383,7 @@ impl SessionReader {
             session_path: Some(session_path.to_string()),
             file_mtime: None,
             file_size: None,
+            message_count: None,
             cwd: None,
             model: None,
             meta: None,

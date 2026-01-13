@@ -1566,6 +1566,7 @@ pub struct SessionMetaC {
     pub encoded_dir_name: *mut c_char,
     pub session_path: *mut c_char,
     pub file_mtime: i64, // -1 表示无
+    pub message_count: i64, // -1 表示无
 }
 
 /// SessionMeta 数组
@@ -1668,6 +1669,7 @@ pub unsafe extern "C" fn session_db_list_session_metas(
                     encoded_dir_name: encoded_dir_name_c,
                     session_path: session_path_c,
                     file_mtime: s.file_mtime.map(|t| t as i64).unwrap_or(-1),
+                    message_count: s.message_count.map(|c| c as i64).unwrap_or(-1),
                 });
             }
 
@@ -1813,6 +1815,7 @@ pub unsafe extern "C" fn session_db_find_latest_session(
                 .unwrap_or(std::ptr::null_mut())
         },
         file_mtime: first.file_mtime,
+        message_count: first.message_count,
     });
 
     *out_session = Box::into_raw(copy);
@@ -1911,6 +1914,7 @@ pub unsafe extern "C" fn session_db_read_session_messages(
             session_path: Some(path_str.to_string()),
             file_mtime: None,
             file_size: None,
+            message_count: None,
             cwd: None,
             model: None,
             meta: None,
