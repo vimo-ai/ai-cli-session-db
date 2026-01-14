@@ -665,6 +665,8 @@ pub unsafe extern "C" fn session_db_insert_messages(
                 tool_name: None,
                 tool_args: None,
                 raw: None,
+                approval_status: None,
+                approval_resolved_at: None,
             });
         }
 
@@ -696,6 +698,7 @@ pub struct MessageC {
     pub content: *mut c_char,
     pub timestamp: i64,
     pub sequence: i64,
+    pub raw: *mut c_char, // 原始 JSONL 数据，用于解析 contentBlocks
 }
 
 /// C 数组 wrapper
@@ -757,6 +760,14 @@ pub unsafe extern "C" fn session_db_list_messages(
                     MessageType::Tool => 2,
                 };
 
+                let raw = match m.raw {
+                    Some(r) => match CString::new(r) {
+                        Ok(s) => s.into_raw(),
+                        Err(_) => std::ptr::null_mut(),
+                    },
+                    None => std::ptr::null_mut(),
+                };
+
                 c_messages.push(MessageC {
                     id: m.id,
                     session_id,
@@ -765,6 +776,7 @@ pub unsafe extern "C" fn session_db_list_messages(
                     content,
                     timestamp: m.timestamp,
                     sequence: m.sequence,
+                    raw,
                 });
             }
 
@@ -803,6 +815,9 @@ pub unsafe extern "C" fn session_db_free_messages(array: *mut MessageArray) {
         if !m.content.is_null() {
             drop(CString::from_raw(m.content));
         }
+        if !m.raw.is_null() {
+            drop(CString::from_raw(m.raw));
+        }
     }
 }
 
@@ -835,6 +850,26 @@ fn escape_fts5_query(query: &str) -> String {
     // 简单策略: 用双引号包裹整个查询字符串，并转义内部的双引号
     let escaped = query.replace('"', "\"\"");
     format!("\"{}\"", escaped)
+}
+
+/// 搜索排序方式 C 枚举
+/// 0 = Score (相关性), 1 = TimeDesc (时间倒序), 2 = TimeAsc (时间正序)
+#[repr(C)]
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum SearchOrderByC {
+    Score = 0,
+    TimeDesc = 1,
+    TimeAsc = 2,
+}
+
+impl From<SearchOrderByC> for crate::types::SearchOrderBy {
+    fn from(order: SearchOrderByC) -> Self {
+        match order {
+            SearchOrderByC::Score => crate::types::SearchOrderBy::Score,
+            SearchOrderByC::TimeDesc => crate::types::SearchOrderBy::TimeDesc,
+            SearchOrderByC::TimeAsc => crate::types::SearchOrderBy::TimeAsc,
+        }
+    }
 }
 
 /// FTS5 全文搜索
@@ -1033,6 +1068,275 @@ pub unsafe extern "C" fn session_db_free_search_results(array: *mut SearchResult
         if !r.snippet.is_null() {
             drop(CString::from_raw(r.snippet));
         }
+    }
+}
+
+/// FTS 全文搜索（完整参数版本，支持项目过滤、排序和日期范围）
+///
+/// # 参数
+/// - `handle`: 数据库句柄
+/// - `query`: 搜索关键词
+/// - `limit`: 返回数量
+/// - `project_id`: 项目 ID（-1 表示不过滤）
+/// - `order_by`: 排序方式（0=Score, 1=TimeDesc, 2=TimeAsc）
+/// - `start_timestamp`: 开始时间戳（毫秒，-1 表示不过滤）
+/// - `end_timestamp`: 结束时间戳（毫秒，-1 表示不过滤）
+/// - `out_array`: 输出搜索结果数组
+///
+/// # Safety
+/// `handle`, `query` 必须是有效指针，返回的数组需要调用 `session_db_free_search_results` 释放
+#[cfg(feature = "fts")]
+#[no_mangle]
+pub unsafe extern "C" fn session_db_search_fts_full(
+    handle: *const SessionDbHandle,
+    query: *const c_char,
+    limit: usize,
+    project_id: i64,
+    order_by: SearchOrderByC,
+    start_timestamp: i64,
+    end_timestamp: i64,
+    out_array: *mut *mut SearchResultArray,
+) -> SessionDbError {
+    if handle.is_null() || query.is_null() || out_array.is_null() {
+        return SessionDbError::NullPointer;
+    }
+
+    let result = panic::catch_unwind(AssertUnwindSafe(|| {
+        let handle = &*handle;
+        let query_str = match CStr::from_ptr(query).to_str() {
+            Ok(s) => s,
+            Err(_) => return Err(SessionDbError::InvalidUtf8),
+        };
+        let escaped_query = escape_fts5_query(query_str);
+        let pid = if project_id >= 0 { Some(project_id) } else { None };
+        let start_ts = if start_timestamp >= 0 { Some(start_timestamp) } else { None };
+        let end_ts = if end_timestamp >= 0 { Some(end_timestamp) } else { None };
+        let order: crate::types::SearchOrderBy = order_by.into();
+        match handle.db.search_fts_full(&escaped_query, limit, pid, order, start_ts, end_ts) {
+            Ok(results) => Ok(results),
+            Err(_) => Err(SessionDbError::DatabaseError),
+        }
+    }));
+
+    match result {
+        Ok(Ok(results)) => {
+            let mut c_results: Vec<SearchResultC> = Vec::new();
+            for r in results {
+                let session_id = match CString::new(r.session_id) {
+                    Ok(s) => s.into_raw(),
+                    Err(_) => return SessionDbError::InvalidUtf8,
+                };
+                let project_name = match CString::new(r.project_name) {
+                    Ok(s) => s.into_raw(),
+                    Err(_) => return SessionDbError::InvalidUtf8,
+                };
+                let role = match CString::new(r.r#type.clone()) {
+                    Ok(s) => s.into_raw(),
+                    Err(_) => return SessionDbError::InvalidUtf8,
+                };
+                let content = match CString::new(r.content_full) {
+                    Ok(s) => s.into_raw(),
+                    Err(_) => return SessionDbError::InvalidUtf8,
+                };
+                let snippet = match CString::new(r.snippet) {
+                    Ok(s) => s.into_raw(),
+                    Err(_) => return SessionDbError::InvalidUtf8,
+                };
+
+                c_results.push(SearchResultC {
+                    message_id: r.message_id,
+                    session_id,
+                    project_id: r.project_id,
+                    project_name,
+                    role,
+                    content,
+                    snippet,
+                    score: r.score,
+                    timestamp: r.timestamp.unwrap_or(-1),
+                });
+            }
+
+            let len = c_results.len();
+            let data = c_results.as_mut_ptr();
+            std::mem::forget(c_results);
+
+            let array = Box::new(SearchResultArray { data, len });
+            *out_array = Box::into_raw(array);
+            SessionDbError::Success
+        }
+        Ok(Err(e)) => e,
+        Err(_) => SessionDbError::Unknown,
+    }
+}
+
+/// FTS 全文搜索（完整参数版本，支持项目过滤和排序）
+///
+/// # 参数
+/// - `handle`: 数据库句柄
+/// - `query`: 搜索关键词
+/// - `limit`: 返回数量
+/// - `project_id`: 项目 ID（-1 表示不过滤）
+/// - `order_by`: 排序方式（0=Score, 1=TimeDesc, 2=TimeAsc）
+/// - `out_array`: 输出搜索结果数组
+///
+/// # Safety
+/// `handle`, `query` 必须是有效指针，返回的数组需要调用 `session_db_free_search_results` 释放
+#[cfg(feature = "fts")]
+#[no_mangle]
+pub unsafe extern "C" fn session_db_search_fts_with_options(
+    handle: *const SessionDbHandle,
+    query: *const c_char,
+    limit: usize,
+    project_id: i64,
+    order_by: SearchOrderByC,
+    out_array: *mut *mut SearchResultArray,
+) -> SessionDbError {
+    if handle.is_null() || query.is_null() || out_array.is_null() {
+        return SessionDbError::NullPointer;
+    }
+
+    let result = panic::catch_unwind(AssertUnwindSafe(|| {
+        let handle = &*handle;
+        let query_str = match CStr::from_ptr(query).to_str() {
+            Ok(s) => s,
+            Err(_) => return Err(SessionDbError::InvalidUtf8),
+        };
+        let escaped_query = escape_fts5_query(query_str);
+        let pid = if project_id >= 0 {
+            Some(project_id)
+        } else {
+            None
+        };
+        let order: crate::types::SearchOrderBy = order_by.into();
+        match handle.db.search_fts_with_options(&escaped_query, limit, pid, order) {
+            Ok(results) => Ok(results),
+            Err(_) => Err(SessionDbError::DatabaseError),
+        }
+    }));
+
+    match result {
+        Ok(Ok(results)) => {
+            let mut c_results: Vec<SearchResultC> = Vec::new();
+            for r in results {
+                let session_id = match CString::new(r.session_id) {
+                    Ok(s) => s.into_raw(),
+                    Err(_) => return SessionDbError::InvalidUtf8,
+                };
+                let project_name = match CString::new(r.project_name) {
+                    Ok(s) => s.into_raw(),
+                    Err(_) => return SessionDbError::InvalidUtf8,
+                };
+                let role = match CString::new(r.r#type.clone()) {
+                    Ok(s) => s.into_raw(),
+                    Err(_) => return SessionDbError::InvalidUtf8,
+                };
+                let content = match CString::new(r.content_full) {
+                    Ok(s) => s.into_raw(),
+                    Err(_) => return SessionDbError::InvalidUtf8,
+                };
+                let snippet = match CString::new(r.snippet) {
+                    Ok(s) => s.into_raw(),
+                    Err(_) => return SessionDbError::InvalidUtf8,
+                };
+
+                c_results.push(SearchResultC {
+                    message_id: r.message_id,
+                    session_id,
+                    project_id: r.project_id,
+                    project_name,
+                    role,
+                    content,
+                    snippet,
+                    score: r.score,
+                    timestamp: r.timestamp.unwrap_or(-1),
+                });
+            }
+
+            let len = c_results.len();
+            let data = c_results.as_mut_ptr();
+            std::mem::forget(c_results);
+
+            let array = Box::new(SearchResultArray { data, len });
+            *out_array = Box::into_raw(array);
+            SessionDbError::Success
+        }
+        Ok(Err(e)) => e,
+        Err(_) => SessionDbError::Unknown,
+    }
+}
+
+// ==================== 审批操作 ====================
+
+/// 审批状态 C 枚举
+/// 0 = Pending, 1 = Approved, 2 = Rejected, 3 = Timeout
+#[repr(C)]
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum ApprovalStatusC {
+    Pending = 0,
+    Approved = 1,
+    Rejected = 2,
+    Timeout = 3,
+}
+
+impl From<ApprovalStatusC> for crate::types::ApprovalStatus {
+    fn from(status: ApprovalStatusC) -> Self {
+        match status {
+            ApprovalStatusC::Pending => crate::types::ApprovalStatus::Pending,
+            ApprovalStatusC::Approved => crate::types::ApprovalStatus::Approved,
+            ApprovalStatusC::Rejected => crate::types::ApprovalStatus::Rejected,
+            ApprovalStatusC::Timeout => crate::types::ApprovalStatus::Timeout,
+        }
+    }
+}
+
+/// 通过 tool_call_id 更新审批状态
+///
+/// # 参数
+/// - `handle`: 数据库句柄
+/// - `tool_call_id`: 工具调用 ID
+/// - `status`: 审批状态 (0=Pending, 1=Approved, 2=Rejected, 3=Timeout)
+/// - `resolved_at`: 审批解决时间戳（毫秒，pending 状态时为 0）
+/// - `out_updated`: 输出更新的行数
+///
+/// # Safety
+/// - `handle` 必须是有效句柄
+/// - `tool_call_id` 必须是有效的 UTF-8 C 字符串
+#[no_mangle]
+pub unsafe extern "C" fn session_db_update_approval_status_by_tool_call_id(
+    handle: *mut SessionDbHandle,
+    tool_call_id: *const c_char,
+    status: ApprovalStatusC,
+    resolved_at: i64,
+    out_updated: *mut usize,
+) -> SessionDbError {
+    if handle.is_null() || tool_call_id.is_null() {
+        return SessionDbError::NullPointer;
+    }
+
+    let result = panic::catch_unwind(AssertUnwindSafe(|| {
+        let handle = &*handle;
+        let tool_call_id_str = match CStr::from_ptr(tool_call_id).to_str() {
+            Ok(s) => s,
+            Err(_) => return Err(SessionDbError::InvalidUtf8),
+        };
+
+        let rust_status: crate::types::ApprovalStatus = status.into();
+
+        match handle.db.update_approval_status_by_tool_call_id(tool_call_id_str, rust_status, resolved_at) {
+            Ok(count) => Ok(count),
+            Err(_) => Err(SessionDbError::DatabaseError),
+        }
+    }));
+
+    match result {
+        Ok(Ok(count)) => {
+            if !out_updated.is_null() {
+                *out_updated = count;
+            }
+            SessionDbError::Success
+        }
+        Ok(Err(e)) => e,
+        Err(_) => SessionDbError::Unknown,
     }
 }
 

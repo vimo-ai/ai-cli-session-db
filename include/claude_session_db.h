@@ -12,6 +12,27 @@
 #include "stddef.h"
 
 /**
+ * 审批状态 C 枚举
+ * 0 = Pending, 1 = Approved, 2 = Rejected, 3 = Timeout
+ */
+typedef enum ApprovalStatusC {
+    Pending = 0,
+    Approved = 1,
+    Rejected = 2,
+    Timeout = 3,
+} ApprovalStatusC;
+
+/**
+ * 搜索排序方式 C 枚举
+ * 0 = Score (相关性), 1 = TimeDesc (时间倒序), 2 = TimeAsc (时间正序)
+ */
+typedef enum SearchOrderByC {
+    Score = 0,
+    TimeDesc = 1,
+    TimeAsc = 2,
+} SearchOrderByC;
+
+/**
  * FFI 友好的错误码
  */
 typedef enum SessionDbError {
@@ -92,6 +113,7 @@ typedef struct MessageC {
     char *content;
     int64_t timestamp;
     int64_t sequence;
+    char *raw;
 } MessageC;
 
 /**
@@ -434,6 +456,72 @@ enum SessionDbError session_db_search_fts_with_project(const struct SessionDbHan
  * `array` 必须是 `session_db_search_fts*` 返回的有效指针
  */
 void session_db_free_search_results(struct SearchResultArray *array);
+
+/**
+ * FTS 全文搜索（完整参数版本，支持项目过滤、排序和日期范围）
+ *
+ * # 参数
+ * - `handle`: 数据库句柄
+ * - `query`: 搜索关键词
+ * - `limit`: 返回数量
+ * - `project_id`: 项目 ID（-1 表示不过滤）
+ * - `order_by`: 排序方式（0=Score, 1=TimeDesc, 2=TimeAsc）
+ * - `start_timestamp`: 开始时间戳（毫秒，-1 表示不过滤）
+ * - `end_timestamp`: 结束时间戳（毫秒，-1 表示不过滤）
+ * - `out_array`: 输出搜索结果数组
+ *
+ * # Safety
+ * `handle`, `query` 必须是有效指针，返回的数组需要调用 `session_db_free_search_results` 释放
+ */
+enum SessionDbError session_db_search_fts_full(const struct SessionDbHandle *handle,
+                                               const char *query,
+                                               uintptr_t limit,
+                                               int64_t project_id,
+                                               enum SearchOrderByC order_by,
+                                               int64_t start_timestamp,
+                                               int64_t end_timestamp,
+                                               struct SearchResultArray **out_array);
+
+/**
+ * FTS 全文搜索（完整参数版本，支持项目过滤和排序）
+ *
+ * # 参数
+ * - `handle`: 数据库句柄
+ * - `query`: 搜索关键词
+ * - `limit`: 返回数量
+ * - `project_id`: 项目 ID（-1 表示不过滤）
+ * - `order_by`: 排序方式（0=Score, 1=TimeDesc, 2=TimeAsc）
+ * - `out_array`: 输出搜索结果数组
+ *
+ * # Safety
+ * `handle`, `query` 必须是有效指针，返回的数组需要调用 `session_db_free_search_results` 释放
+ */
+enum SessionDbError session_db_search_fts_with_options(const struct SessionDbHandle *handle,
+                                                       const char *query,
+                                                       uintptr_t limit,
+                                                       int64_t project_id,
+                                                       enum SearchOrderByC order_by,
+                                                       struct SearchResultArray **out_array);
+
+/**
+ * 通过 tool_call_id 更新审批状态
+ *
+ * # 参数
+ * - `handle`: 数据库句柄
+ * - `tool_call_id`: 工具调用 ID
+ * - `status`: 审批状态 (0=Pending, 1=Approved, 2=Rejected, 3=Timeout)
+ * - `resolved_at`: 审批解决时间戳（毫秒，pending 状态时为 0）
+ * - `out_updated`: 输出更新的行数
+ *
+ * # Safety
+ * - `handle` 必须是有效句柄
+ * - `tool_call_id` 必须是有效的 UTF-8 C 字符串
+ */
+enum SessionDbError session_db_update_approval_status_by_tool_call_id(struct SessionDbHandle *handle,
+                                                                      const char *tool_call_id,
+                                                                      enum ApprovalStatusC status,
+                                                                      int64_t resolved_at,
+                                                                      uintptr_t *out_updated);
 
 /**
  * 释放 C 字符串
