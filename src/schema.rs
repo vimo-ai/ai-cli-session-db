@@ -53,6 +53,8 @@ CREATE TABLE IF NOT EXISTS messages (
     tool_args TEXT,                 -- Tool 参数
     raw TEXT,                       -- 原始 JSONL 数据（用于重解析）
     vector_indexed INTEGER DEFAULT 0, -- 是否已向量索引 (0=未索引, 1=已索引)
+    approval_status TEXT,           -- 审批状态: pending, approved, rejected, timeout, NULL
+    approval_resolved_at INTEGER,   -- 审批解决时间戳（毫秒）
 
     FOREIGN KEY (session_id) REFERENCES sessions(session_id)
 );
@@ -67,6 +69,8 @@ CREATE INDEX IF NOT EXISTS idx_messages_timestamp ON messages(timestamp);
 CREATE INDEX IF NOT EXISTS idx_messages_uuid ON messages(uuid);
 CREATE INDEX IF NOT EXISTS idx_messages_type ON messages(type);
 CREATE INDEX IF NOT EXISTS idx_messages_vector_indexed ON messages(vector_indexed);
+CREATE INDEX IF NOT EXISTS idx_messages_approval_status ON messages(approval_status) WHERE approval_status IS NOT NULL;
+CREATE INDEX IF NOT EXISTS idx_messages_approval_pending ON messages(session_id, approval_status) WHERE approval_status = 'pending';
 "#;
 
 /// FTS5 全文搜索 Schema (索引 content_full)
