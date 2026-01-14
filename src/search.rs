@@ -2,7 +2,7 @@
 
 use crate::db::SessionDB;
 use crate::error::Result;
-use crate::types::SearchResult;
+use crate::types::{SearchOrderBy, SearchResult};
 #[allow(unused_imports)]
 use rusqlite::params;
 
@@ -44,7 +44,7 @@ fn escape_fts5_query(query: &str) -> String {
 impl SessionDB {
     /// FTS5 全文搜索
     pub fn search_fts(&self, query: &str, limit: usize) -> Result<Vec<SearchResult>> {
-        self.search_fts_with_project(query, limit, None)
+        self.search_fts_with_options(query, limit, None, SearchOrderBy::Score)
     }
 
     /// FTS5 全文搜索 (可指定项目)
@@ -54,69 +54,109 @@ impl SessionDB {
         limit: usize,
         project_id: Option<i64>,
     ) -> Result<Vec<SearchResult>> {
+        self.search_fts_with_options(query, limit, project_id, SearchOrderBy::Score)
+    }
+
+    /// FTS5 全文搜索 (完整参数版本)
+    ///
+    /// # Arguments
+    /// - `query`: 搜索关键词
+    /// - `limit`: 返回数量
+    /// - `project_id`: 项目 ID 过滤（可选）
+    /// - `order_by`: 排序方式
+    pub fn search_fts_with_options(
+        &self,
+        query: &str,
+        limit: usize,
+        project_id: Option<i64>,
+        order_by: SearchOrderBy,
+    ) -> Result<Vec<SearchResult>> {
+        self.search_fts_full(query, limit, project_id, order_by, None, None)
+    }
+
+    /// FTS5 全文搜索 (完整参数版本，含日期范围)
+    ///
+    /// # Arguments
+    /// - `query`: 搜索关键词
+    /// - `limit`: 返回数量
+    /// - `project_id`: 项目 ID 过滤（可选）
+    /// - `order_by`: 排序方式
+    /// - `start_timestamp`: 开始时间戳（毫秒，可选）
+    /// - `end_timestamp`: 结束时间戳（毫秒，可选）
+    pub fn search_fts_full(
+        &self,
+        query: &str,
+        limit: usize,
+        project_id: Option<i64>,
+        order_by: SearchOrderBy,
+        start_timestamp: Option<i64>,
+        end_timestamp: Option<i64>,
+    ) -> Result<Vec<SearchResult>> {
         let conn = self.conn.lock();
 
         // 转义查询，防止 FTS5 语法错误
         let escaped_query = escape_fts5_query(query);
 
-        let (sql, params_vec): (&str, Vec<Box<dyn rusqlite::ToSql>>) = if let Some(pid) = project_id
-        {
-            (
-                r#"
-                SELECT
-                    m.id,
-                    m.session_id,
-                    s.project_id,
-                    p.name as project_name,
-                    m.type,
-                    m.content_full,
-                    snippet(messages_fts, 0, '<mark>', '</mark>', '...', 64) as snippet,
-                    bm25(messages_fts) as score,
-                    m.timestamp
-                FROM messages_fts
-                JOIN messages m ON messages_fts.rowid = m.id
-                JOIN sessions s ON m.session_id = s.session_id
-                JOIN projects p ON s.project_id = p.id
-                WHERE messages_fts MATCH ?1
-                  AND s.project_id = ?2
-                ORDER BY score
-                LIMIT ?3
-                "#,
-                vec![
-                    Box::new(escaped_query.clone()) as Box<dyn rusqlite::ToSql>,
-                    Box::new(pid),
-                    Box::new(limit as i64),
-                ],
-            )
-        } else {
-            (
-                r#"
-                SELECT
-                    m.id,
-                    m.session_id,
-                    s.project_id,
-                    p.name as project_name,
-                    m.type,
-                    m.content_full,
-                    snippet(messages_fts, 0, '<mark>', '</mark>', '...', 64) as snippet,
-                    bm25(messages_fts) as score,
-                    m.timestamp
-                FROM messages_fts
-                JOIN messages m ON messages_fts.rowid = m.id
-                JOIN sessions s ON m.session_id = s.session_id
-                JOIN projects p ON s.project_id = p.id
-                WHERE messages_fts MATCH ?1
-                ORDER BY score
-                LIMIT ?2
-                "#,
-                vec![
-                    Box::new(escaped_query) as Box<dyn rusqlite::ToSql>,
-                    Box::new(limit as i64),
-                ],
-            )
+        // 根据排序方式生成 ORDER BY 子句
+        let order_clause = match order_by {
+            SearchOrderBy::Score => "ORDER BY score",
+            SearchOrderBy::TimeDesc => "ORDER BY m.timestamp DESC",
+            SearchOrderBy::TimeAsc => "ORDER BY m.timestamp ASC",
         };
 
-        let mut stmt = conn.prepare(sql)?;
+        // 动态构建 WHERE 子句和参数
+        let mut where_clauses = vec!["messages_fts MATCH ?1".to_string()];
+        let mut params_vec: Vec<Box<dyn rusqlite::ToSql>> =
+            vec![Box::new(escaped_query) as Box<dyn rusqlite::ToSql>];
+        let mut param_idx = 2;
+
+        if let Some(pid) = project_id {
+            where_clauses.push(format!("s.project_id = ?{}", param_idx));
+            params_vec.push(Box::new(pid));
+            param_idx += 1;
+        }
+
+        if let Some(start_ts) = start_timestamp {
+            where_clauses.push(format!("m.timestamp >= ?{}", param_idx));
+            params_vec.push(Box::new(start_ts));
+            param_idx += 1;
+        }
+
+        if let Some(end_ts) = end_timestamp {
+            where_clauses.push(format!("m.timestamp <= ?{}", param_idx));
+            params_vec.push(Box::new(end_ts));
+            param_idx += 1;
+        }
+
+        // LIMIT 参数
+        params_vec.push(Box::new(limit as i64));
+
+        let sql = format!(
+            r#"
+            SELECT
+                m.id,
+                m.session_id,
+                s.project_id,
+                p.name as project_name,
+                m.type,
+                m.content_full,
+                snippet(messages_fts, 0, '<mark>', '</mark>', '...', 64) as snippet,
+                bm25(messages_fts) as score,
+                m.timestamp
+            FROM messages_fts
+            JOIN messages m ON messages_fts.rowid = m.id
+            JOIN sessions s ON m.session_id = s.session_id
+            JOIN projects p ON s.project_id = p.id
+            WHERE {}
+            {}
+            LIMIT ?{}
+            "#,
+            where_clauses.join(" AND "),
+            order_clause,
+            param_idx
+        );
+
+        let mut stmt = conn.prepare(&sql)?;
         let params_refs: Vec<&dyn rusqlite::ToSql> = params_vec.iter().map(|p| p.as_ref()).collect();
 
         let rows = stmt.query_map(params_refs.as_slice(), |row| {
