@@ -95,6 +95,8 @@ pub fn convert_message(msg: &ai_cli_session_collector::ParsedMessage, sequence: 
         tool_name: msg.tool_name.clone(),
         tool_args: msg.tool_args.clone(),
         raw: msg.raw.clone(),
+        approval_status: None,
+        approval_resolved_at: None,
     }
 }
 

@@ -45,6 +45,7 @@
 pub mod config;
 pub mod db;
 pub mod error;
+pub mod migrations;
 pub mod reader;
 pub mod schema;
 pub mod types;
