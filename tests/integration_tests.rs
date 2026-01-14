@@ -206,6 +206,8 @@ mod message_tests {
                 tool_name: None,
                 tool_args: None,
                 raw: None,
+                approval_status: None,
+                approval_resolved_at: None,
             })
             .collect()
     }
@@ -297,6 +299,8 @@ mod message_tests {
                 tool_name: None,
                 tool_args: None,
                 raw: None,
+                approval_status: None,
+                approval_resolved_at: None,
             },
             MessageInput {
                 uuid: "uuid-2".to_string(),
@@ -312,6 +316,8 @@ mod message_tests {
                 tool_name: None,
                 tool_args: None,
                 raw: None,
+                approval_status: None,
+                approval_resolved_at: None,
             },
         ];
 
@@ -349,6 +355,8 @@ mod incremental_scan_tests {
                 tool_name: None,
                 tool_args: None,
                 raw: None,
+                approval_status: None,
+                approval_resolved_at: None,
             })
             .collect();
 
@@ -379,6 +387,8 @@ mod incremental_scan_tests {
                 tool_name: None,
                 tool_args: None,
                 raw: None,
+                approval_status: None,
+                approval_resolved_at: None,
             })
             .collect();
 
@@ -400,6 +410,8 @@ mod incremental_scan_tests {
                 tool_name: None,
                 tool_args: None,
                 raw: None,
+                approval_status: None,
+                approval_resolved_at: None,
             })
             .collect();
 
@@ -433,6 +445,8 @@ mod incremental_scan_tests {
             tool_name: None,
             tool_args: None,
             raw: None,
+            approval_status: None,
+            approval_resolved_at: None,
         }];
         db.scan_session_incremental("session-001", project_id, messages1).unwrap();
 
@@ -452,6 +466,8 @@ mod incremental_scan_tests {
                 tool_name: None,
                 tool_args: None,
                 raw: None,
+                approval_status: None,
+                approval_resolved_at: None,
             },
             MessageInput {
                 uuid: "uuid-2".to_string(), // 新消息，但时间戳在检查点附近
@@ -467,6 +483,8 @@ mod incremental_scan_tests {
                 tool_name: None,
                 tool_args: None,
                 raw: None,
+                approval_status: None,
+                approval_resolved_at: None,
             },
         ];
 
@@ -506,6 +524,8 @@ mod search_tests {
                 tool_name: None,
                 tool_args: None,
                 raw: None,
+                approval_status: None,
+                approval_resolved_at: None,
             },
             MessageInput {
                 uuid: "uuid-2".to_string(),
@@ -521,6 +541,8 @@ mod search_tests {
                 tool_name: None,
                 tool_args: None,
                 raw: None,
+                approval_status: None,
+                approval_resolved_at: None,
             },
             MessageInput {
                 uuid: "uuid-3".to_string(),
@@ -536,6 +558,8 @@ mod search_tests {
                 tool_name: None,
                 tool_args: None,
                 raw: None,
+                approval_status: None,
+                approval_resolved_at: None,
             },
         ];
 
@@ -578,6 +602,8 @@ mod search_tests {
             tool_name: None,
             tool_args: None,
             raw: None,
+            approval_status: None,
+            approval_resolved_at: None,
         }]).unwrap();
 
         db.insert_messages("session-2", &[MessageInput {
@@ -594,6 +620,8 @@ mod search_tests {
             tool_name: None,
             tool_args: None,
             raw: None,
+            approval_status: None,
+            approval_resolved_at: None,
         }]).unwrap();
 
         // 不带过滤，应该找到 2 条
@@ -629,6 +657,8 @@ mod search_tests {
                 tool_name: None,
                 tool_args: None,
                 raw: None,
+                approval_status: None,
+                approval_resolved_at: None,
             })
             .collect();
 
@@ -686,6 +716,8 @@ mod stats_tests {
                 tool_name: None,
                 tool_args: None,
                 raw: None,
+                approval_status: None,
+                approval_resolved_at: None,
             })
             .collect();
 
@@ -813,6 +845,8 @@ mod edge_case_tests {
             tool_name: None,
             tool_args: None,
             raw: None,
+            approval_status: None,
+            approval_resolved_at: None,
         }];
 
         let inserted = db.insert_messages("session-001", &messages).unwrap();
@@ -843,6 +877,8 @@ mod edge_case_tests {
             tool_name: None,
             tool_args: None,
             raw: None,
+            approval_status: None,
+            approval_resolved_at: None,
         }];
 
         db.insert_messages("session-001", &messages).unwrap();
@@ -879,6 +915,8 @@ mod edge_case_tests {
             tool_name: None,
             tool_args: None,
             raw: None,
+            approval_status: None,
+            approval_resolved_at: None,
         }];
 
         db.insert_messages("session-001", &messages).unwrap();
@@ -949,6 +987,8 @@ mod edge_case_tests {
                 tool_name: None,
                 tool_args: None,
                 raw: None,
+                approval_status: None,
+                approval_resolved_at: None,
             })
             .collect();
 
@@ -982,6 +1022,8 @@ mod edge_case_tests {
                 tool_name: None,
                 tool_args: None,
                 raw: None,
+                approval_status: None,
+                approval_resolved_at: None,
             },
             MessageInput {
                 uuid: "uuid-1".to_string(),
@@ -997,6 +1039,8 @@ mod edge_case_tests {
                 tool_name: None,
                 tool_args: None,
                 raw: None,
+                approval_status: None,
+                approval_resolved_at: None,
             },
             MessageInput {
                 uuid: "uuid-2".to_string(),
@@ -1012,6 +1056,8 @@ mod edge_case_tests {
                 tool_name: None,
                 tool_args: None,
                 raw: None,
+                approval_status: None,
+                approval_resolved_at: None,
             },
         ];
 
