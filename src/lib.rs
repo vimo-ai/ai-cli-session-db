@@ -66,7 +66,9 @@ pub mod ffi;
 pub use config::DbConfig;
 pub use db::{MessageInput, ProjectWithSource, SessionDB, SessionInput};
 pub use error::{Error, Result};
-pub use reader::{MessagesResult, Order, ProjectInfo, RawMessagesResult, SessionMetrics, SessionReader};
+pub use reader::{
+    MessagesResult, Order, ProjectInfo, RawMessagesResult, SessionMetrics, SessionReader,
+};
 pub use types::*;
 
 #[cfg(feature = "coordination")]
@@ -75,14 +77,13 @@ pub use coordination::{Role, WriterHealth, WriterType};
 // Re-export ai-cli-session-collector 类型（统一入口）
 // 下游项目应该从这里导入，避免直接依赖 ai-cli-session-collector
 pub use ai_cli_session_collector::{
-    ClaudeAdapter,
-    CodexAdapter,
-    ConversationAdapter,
-    IndexableMessage,
-    IndexableSession,
-    MessageType,
-    ParseResult,
-    ParsedMessage,
-    SessionMeta,
+    // 核心类型
+    AdapterMeta, ConversationAdapter, WatchConfig,
+    // 工厂函数（适配器自注册机制）
+    adapter_for_path, all_adapters, all_extensions, all_watch_configs,
+    // 具体适配器
+    ClaudeAdapter, CodexAdapter, OpenCodeAdapter,
+    // 领域类型
+    IndexableMessage, IndexableSession, MessageType, ParseResult, ParsedMessage, SessionMeta,
     Source,
 };

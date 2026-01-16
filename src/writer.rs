@@ -67,7 +67,10 @@ impl SessionDB {
 }
 
 /// 从 ai-cli-session-collector 消息转换为 MessageInput
-pub fn convert_message(msg: &ai_cli_session_collector::ParsedMessage, sequence: i64) -> MessageInput {
+pub fn convert_message(
+    msg: &ai_cli_session_collector::ParsedMessage,
+    sequence: i64,
+) -> MessageInput {
     let message_type = match msg.message_type {
         ai_cli_session_collector::MessageType::User => MessageType::User,
         ai_cli_session_collector::MessageType::Assistant => MessageType::Assistant,
@@ -75,7 +78,8 @@ pub fn convert_message(msg: &ai_cli_session_collector::ParsedMessage, sequence: 
     };
 
     // 解析时间戳 (ISO 8601 -> 毫秒)
-    let timestamp = msg.timestamp
+    let timestamp = msg
+        .timestamp
         .as_ref()
         .and_then(|ts| chrono::DateTime::parse_from_rfc3339(ts).ok())
         .map(|dt| dt.timestamp_millis())

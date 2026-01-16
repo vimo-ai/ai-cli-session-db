@@ -13,7 +13,10 @@ fn main() -> Result<()> {
 
     if args.len() < 3 {
         eprintln!("用法: {} <数据库路径> <JSONL目录或文件>...", args[0]);
-        eprintln!("例: {} ~/.vimo/db/ai-cli-session-v2.db ~/memex-data/archive/2025/12/", args[0]);
+        eprintln!(
+            "例: {} ~/.vimo/db/ai-cli-session-v2.db ~/memex-data/archive/2025/12/",
+            args[0]
+        );
         std::process::exit(1);
     }
 
@@ -77,7 +80,10 @@ fn main() -> Result<()> {
 
     // 重建 FTS 和触发器
     println!("\n重建 FTS 索引...");
-    conn.execute("INSERT INTO messages_fts(messages_fts) VALUES('rebuild')", [])?;
+    conn.execute(
+        "INSERT INTO messages_fts(messages_fts) VALUES('rebuild')",
+        [],
+    )?;
 
     conn.execute_batch(
         "CREATE TRIGGER IF NOT EXISTS messages_ai AFTER INSERT ON messages BEGIN

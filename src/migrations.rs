@@ -25,11 +25,10 @@ pub fn initialize_migrations(conn: &Connection) -> SqliteResult<()> {
 
 /// 获取当前数据库版本
 fn get_current_version(conn: &Connection) -> SqliteResult<i64> {
-    let version: SqliteResult<i64> = conn.query_row(
-        "SELECT MAX(version) FROM schema_migrations",
-        [],
-        |row| row.get(0),
-    );
+    let version: SqliteResult<i64> =
+        conn.query_row("SELECT MAX(version) FROM schema_migrations", [], |row| {
+            row.get(0)
+        });
 
     match version {
         Ok(v) => Ok(v),
@@ -96,10 +95,7 @@ fn migration_001_add_approval_fields(conn: &Connection) -> SqliteResult<()> {
 
     if !approval_status_exists {
         info!("添加 approval_status 列");
-        conn.execute(
-            "ALTER TABLE messages ADD COLUMN approval_status TEXT",
-            [],
-        )?;
+        conn.execute("ALTER TABLE messages ADD COLUMN approval_status TEXT", [])?;
     } else {
         info!("approval_status 列已存在，跳过");
     }
@@ -196,8 +192,9 @@ mod tests {
                 timestamp INTEGER NOT NULL,
                 sequence INTEGER NOT NULL
             );
-            "#
-        ).unwrap();
+            "#,
+        )
+        .unwrap();
 
         // 运行迁移
         run_migrations(&conn).unwrap();

@@ -594,6 +594,28 @@ char *session_db_get_session_path(const char *projects_path, const char *session
 char *session_db_get_encoded_dir_name(const char *projects_path, const char *project_path);
 
 /**
+ * 计算会话文件路径
+ *
+ * 根据 encoded_dir_name 和 session_id 直接计算路径，无需搜索。
+ * 路径规则: `{projects_path}/{encoded_dir_name}/{session_id}.jsonl`
+ *
+ * # 参数
+ * - `projects_path`: Claude projects 目录路径，null 使用默认路径
+ * - `encoded_dir_name`: 项目的编码目录名
+ * - `session_id`: 会话 ID
+ *
+ * # 返回
+ * - 成功：返回计算出的路径（不检查文件是否存在）
+ * - 失败：返回 null
+ *
+ * # Safety
+ * - 返回的字符串需要调用 `session_db_free_string` 释放
+ */
+char *session_db_compute_session_path(const char *projects_path,
+                                      const char *encoded_dir_name,
+                                      const char *session_id);
+
+/**
  * 列出所有项目（从文件系统）
  *
  * 会话数量不包含 agent session。

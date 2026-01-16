@@ -82,9 +82,9 @@ pub struct CoordinationConfig {
 impl Default for CoordinationConfig {
     fn default() -> Self {
         Self {
-            heartbeat_interval_ms: 10_000,  // 10s
-            timeout_threshold_ms: 30_000,   // 30s
-            confirm_count: 3,               // 3 次
+            heartbeat_interval_ms: 10_000, // 10s
+            timeout_threshold_ms: 30_000,  // 30s
+            confirm_count: 3,              // 3 次
         }
     }
 }
@@ -267,7 +267,11 @@ impl Coordinator {
         )?;
 
         if rows > 0 {
-            tracing::info!("接管超时 Writer: type={}, id={}", writer_type_name, &self.writer_id);
+            tracing::info!(
+                "接管超时 Writer: type={}, id={}",
+                writer_type_name,
+                &self.writer_id
+            );
             let _ = self.role_tx.send(Role::Writer);
             return Ok(true);
         }
@@ -287,7 +291,11 @@ impl Coordinator {
                 "#,
                 params![writer_type_name, &self.writer_id, priority, now],
             )?;
-            tracing::info!("接管空位 Writer: type={}, id={}", writer_type_name, &self.writer_id);
+            tracing::info!(
+                "接管空位 Writer: type={}, id={}",
+                writer_type_name,
+                &self.writer_id
+            );
             let _ = self.role_tx.send(Role::Writer);
             return Ok(true);
         }
@@ -305,15 +313,15 @@ impl Coordinator {
             )
             .optional()?;
 
-        Ok(result.map(|(writer_type, writer_id, priority, heartbeat, registered_at)| {
-            WriterInfo {
+        Ok(result.map(
+            |(writer_type, writer_id, priority, heartbeat, registered_at)| WriterInfo {
                 writer_type,
                 writer_id,
                 priority,
                 heartbeat,
                 registered_at,
-            }
-        }))
+            },
+        ))
     }
 }
 

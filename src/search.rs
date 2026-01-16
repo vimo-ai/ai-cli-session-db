@@ -157,7 +157,8 @@ impl SessionDB {
         );
 
         let mut stmt = conn.prepare(&sql)?;
-        let params_refs: Vec<&dyn rusqlite::ToSql> = params_vec.iter().map(|p| p.as_ref()).collect();
+        let params_refs: Vec<&dyn rusqlite::ToSql> =
+            params_vec.iter().map(|p| p.as_ref()).collect();
 
         let rows = stmt.query_map(params_refs.as_slice(), |row| {
             Ok(SearchResult {
@@ -187,7 +188,10 @@ mod tests {
         // 单个词：直接用双引号包裹
         assert_eq!(escape_fts5_query("hello"), "\"hello\"");
         assert_eq!(escape_fts5_query("ETerm.app"), "\"ETerm.app\"");
-        assert_eq!(escape_fts5_query("test-case.rs:123"), "\"test-case.rs:123\"");
+        assert_eq!(
+            escape_fts5_query("test-case.rs:123"),
+            "\"test-case.rs:123\""
+        );
     }
 
     #[test]
@@ -201,10 +205,7 @@ mod tests {
             escape_fts5_query("ETerm 启动 环境变量"),
             "\"ETerm\" OR \"启动\" OR \"环境变量\""
         );
-        assert_eq!(
-            escape_fts5_query("open --env"),
-            "\"open\" OR \"--env\""
-        );
+        assert_eq!(escape_fts5_query("open --env"), "\"open\" OR \"--env\"");
     }
 
     #[test]

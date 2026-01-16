@@ -1,7 +1,7 @@
 //! 集成测试
 
-use claude_session_db::*;
 use claude_session_db::db::MessageInput;
+use claude_session_db::*;
 use tempfile::TempDir;
 
 /// 创建临时数据库
@@ -65,7 +65,9 @@ mod project_tests {
     fn test_create_project() {
         let (db, _tmp) = setup_db();
 
-        let id = db.get_or_create_project("test-project", "/path/to/project", "claude").unwrap();
+        let id = db
+            .get_or_create_project("test-project", "/path/to/project", "claude")
+            .unwrap();
         assert!(id > 0);
 
         let projects = db.list_projects().unwrap();
@@ -94,9 +96,12 @@ mod project_tests {
     fn test_multiple_projects() {
         let (db, _tmp) = setup_db();
 
-        db.get_or_create_project("project1", "/path1", "claude").unwrap();
-        db.get_or_create_project("project2", "/path2", "claude").unwrap();
-        db.get_or_create_project("project3", "/path3", "codex").unwrap();
+        db.get_or_create_project("project1", "/path1", "claude")
+            .unwrap();
+        db.get_or_create_project("project2", "/path2", "claude")
+            .unwrap();
+        db.get_or_create_project("project3", "/path3", "codex")
+            .unwrap();
 
         let projects = db.list_projects().unwrap();
         assert_eq!(projects.len(), 3);
@@ -107,8 +112,12 @@ mod project_tests {
         let (db, _tmp) = setup_db();
 
         // 同名但不同路径应该创建两个项目
-        let id1 = db.get_or_create_project("test", "/path1", "claude").unwrap();
-        let id2 = db.get_or_create_project("test", "/path2", "claude").unwrap();
+        let id1 = db
+            .get_or_create_project("test", "/path1", "claude")
+            .unwrap();
+        let id2 = db
+            .get_or_create_project("test", "/path2", "claude")
+            .unwrap();
 
         assert_ne!(id1, id2);
     }
@@ -178,7 +187,8 @@ mod session_tests {
         assert!(checkpoint.is_none());
 
         // 更新检查点
-        db.update_session_last_message("session-001", 1234567890).unwrap();
+        db.update_session_last_message("session-001", 1234567890)
+            .unwrap();
 
         let checkpoint = db.get_scan_checkpoint("session-001").unwrap();
         assert_eq!(checkpoint, Some(1234567890));
@@ -194,7 +204,11 @@ mod message_tests {
         (0..count)
             .map(|i| MessageInput {
                 uuid: format!("uuid-{}", i),
-                r#type: if i % 2 == 0 { MessageType::User } else { MessageType::Assistant },
+                r#type: if i % 2 == 0 {
+                    MessageType::User
+                } else {
+                    MessageType::Assistant
+                },
                 content_text: format!("Message content {}", i),
                 content_full: format!("Message content {}", i),
                 timestamp: 1000000 + i as i64,
@@ -361,7 +375,9 @@ mod incremental_scan_tests {
             .collect();
 
         // 首次扫描应该全量插入
-        let inserted = db.scan_session_incremental("session-001", project_id, messages).unwrap();
+        let inserted = db
+            .scan_session_incremental("session-001", project_id, messages)
+            .unwrap();
         assert_eq!(inserted, 5);
     }
 
@@ -392,7 +408,8 @@ mod incremental_scan_tests {
             })
             .collect();
 
-        db.scan_session_incremental("session-001", project_id, messages1).unwrap();
+        db.scan_session_incremental("session-001", project_id, messages1)
+            .unwrap();
 
         // 第二批消息（包含旧消息 + 新消息）
         let messages2: Vec<MessageInput> = (0..6)
@@ -416,7 +433,9 @@ mod incremental_scan_tests {
             .collect();
 
         // 增量扫描应该只插入新消息
-        let inserted = db.scan_session_incremental("session-001", project_id, messages2).unwrap();
+        let inserted = db
+            .scan_session_incremental("session-001", project_id, messages2)
+            .unwrap();
         assert_eq!(inserted, 3); // uuid-3, uuid-4, uuid-5
 
         // 总数应该是 6
@@ -448,7 +467,8 @@ mod incremental_scan_tests {
             approval_status: None,
             approval_resolved_at: None,
         }];
-        db.scan_session_incremental("session-001", project_id, messages1).unwrap();
+        db.scan_session_incremental("session-001", project_id, messages1)
+            .unwrap();
 
         // 在安全边界内的消息应该被重新检查（但因为 UUID 相同会去重）
         let messages2 = vec![
@@ -488,7 +508,9 @@ mod incremental_scan_tests {
             },
         ];
 
-        let inserted = db.scan_session_incremental("session-001", project_id, messages2).unwrap();
+        let inserted = db
+            .scan_session_incremental("session-001", project_id, messages2)
+            .unwrap();
         // uuid-1 去重，uuid-2 在安全边界内会被处理但因为时间戳早于 cutoff 所以不会被插入
         // 实际上 cutoff = checkpoint - 60s = 1000000 - 60000 = 940000
         // uuid-2 的 timestamp = 970000 > 940000，所以会被处理并插入
@@ -582,54 +604,68 @@ mod search_tests {
     fn test_fts_search_with_project_filter() {
         let (db, _tmp) = setup_db();
 
-        let project1 = db.get_or_create_project("project1", "/path1", "claude").unwrap();
-        let project2 = db.get_or_create_project("project2", "/path2", "claude").unwrap();
+        let project1 = db
+            .get_or_create_project("project1", "/path1", "claude")
+            .unwrap();
+        let project2 = db
+            .get_or_create_project("project2", "/path2", "claude")
+            .unwrap();
 
         db.upsert_session("session-1", project1).unwrap();
         db.upsert_session("session-2", project2).unwrap();
 
-        db.insert_messages("session-1", &[MessageInput {
-            uuid: "uuid-1".to_string(),
-            r#type: MessageType::User,
-            content_text: "Rust programming".to_string(),
-            content_full: "Rust programming".to_string(),
-            timestamp: 1000,
-            sequence: 0,
-            source: None,
-            channel: None,
-            model: None,
-            tool_call_id: None,
-            tool_name: None,
-            tool_args: None,
-            raw: None,
-            approval_status: None,
-            approval_resolved_at: None,
-        }]).unwrap();
+        db.insert_messages(
+            "session-1",
+            &[MessageInput {
+                uuid: "uuid-1".to_string(),
+                r#type: MessageType::User,
+                content_text: "Rust programming".to_string(),
+                content_full: "Rust programming".to_string(),
+                timestamp: 1000,
+                sequence: 0,
+                source: None,
+                channel: None,
+                model: None,
+                tool_call_id: None,
+                tool_name: None,
+                tool_args: None,
+                raw: None,
+                approval_status: None,
+                approval_resolved_at: None,
+            }],
+        )
+        .unwrap();
 
-        db.insert_messages("session-2", &[MessageInput {
-            uuid: "uuid-2".to_string(),
-            r#type: MessageType::User,
-            content_text: "Rust programming".to_string(),
-            content_full: "Rust programming".to_string(),
-            timestamp: 1000,
-            sequence: 0,
-            source: None,
-            channel: None,
-            model: None,
-            tool_call_id: None,
-            tool_name: None,
-            tool_args: None,
-            raw: None,
-            approval_status: None,
-            approval_resolved_at: None,
-        }]).unwrap();
+        db.insert_messages(
+            "session-2",
+            &[MessageInput {
+                uuid: "uuid-2".to_string(),
+                r#type: MessageType::User,
+                content_text: "Rust programming".to_string(),
+                content_full: "Rust programming".to_string(),
+                timestamp: 1000,
+                sequence: 0,
+                source: None,
+                channel: None,
+                model: None,
+                tool_call_id: None,
+                tool_name: None,
+                tool_args: None,
+                raw: None,
+                approval_status: None,
+                approval_resolved_at: None,
+            }],
+        )
+        .unwrap();
 
         // 不带过滤，应该找到 2 条
         let results = db.search_fts("Rust", 10).unwrap();
         assert_eq!(results.len(), 2);
 
         // 带项目过滤，应该只找到 1 条
-        let results = db.search_fts_with_project("Rust", 10, Some(project1)).unwrap();
+        let results = db
+            .search_fts_with_project("Rust", 10, Some(project1))
+            .unwrap();
         assert_eq!(results.len(), 1);
         assert_eq!(results[0].project_id, project1);
     }
@@ -860,7 +896,9 @@ mod edge_case_tests {
     fn test_unicode_content() {
         let (db, _tmp) = setup_db();
 
-        let project_id = db.get_or_create_project("测试项目", "/路径/中文", "claude").unwrap();
+        let project_id = db
+            .get_or_create_project("测试项目", "/路径/中文", "claude")
+            .unwrap();
         db.upsert_session("session-001", project_id).unwrap();
 
         let messages = vec![MessageInput {
@@ -884,7 +922,10 @@ mod edge_case_tests {
         db.insert_messages("session-001", &messages).unwrap();
 
         let loaded = db.list_messages("session-001", 10, 0).unwrap();
-        assert_eq!(loaded[0].content_text, "你好世界 🌍 مرحبا العالم 🎉 こんにちは");
+        assert_eq!(
+            loaded[0].content_text,
+            "你好世界 🌍 مرحبا العالم 🎉 こんにちは"
+        );
 
         // 项目名也应该正确
         let projects = db.list_projects().unwrap();
@@ -931,13 +972,17 @@ mod edge_case_tests {
 
         // 路径包含特殊字符
         let weird_path = "/path/with spaces/and-dashes/and_underscores/and.dots";
-        let project_id = db.get_or_create_project("test", weird_path, "claude").unwrap();
+        let project_id = db
+            .get_or_create_project("test", weird_path, "claude")
+            .unwrap();
 
         let projects = db.list_projects().unwrap();
         assert_eq!(projects[0].path, weird_path);
 
         // 再次获取应该返回同一个 ID
-        let id2 = db.get_or_create_project("test", weird_path, "claude").unwrap();
+        let id2 = db
+            .get_or_create_project("test", weird_path, "claude")
+            .unwrap();
         assert_eq!(project_id, id2);
     }
 
@@ -975,7 +1020,11 @@ mod edge_case_tests {
         let messages: Vec<MessageInput> = (0..1000)
             .map(|i| MessageInput {
                 uuid: format!("uuid-{}", i),
-                r#type: if i % 2 == 0 { MessageType::User } else { MessageType::Assistant },
+                r#type: if i % 2 == 0 {
+                    MessageType::User
+                } else {
+                    MessageType::Assistant
+                },
                 content_text: format!("Message {}", i),
                 content_full: format!("Message {}", i),
                 timestamp: i as i64,
@@ -1095,6 +1144,8 @@ mod writer_conversion_tests {
             tool_name: None,
             tool_args: None,
             raw: None,
+            cwd: None,
+            stop_reason: None,
         }
     }
 
