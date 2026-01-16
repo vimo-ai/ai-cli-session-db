@@ -28,7 +28,6 @@ CREATE TABLE IF NOT EXISTS sessions (
     file_mtime INTEGER,       -- 文件修改时间戳 (毫秒)
     file_size INTEGER,        -- 文件大小 (字节)
     -- 额外元信息
-    encoded_dir_name TEXT,    -- Claude 编码目录名
     meta TEXT,                -- 额外元信息 (JSON)
     -- 时间戳
     created_at INTEGER NOT NULL DEFAULT (strftime('%s', 'now') * 1000),
@@ -45,7 +44,7 @@ CREATE TABLE IF NOT EXISTS messages (
     content_full TEXT NOT NULL, -- 完整格式化内容（用于 FTS，包含 tool_use 等）
     timestamp INTEGER NOT NULL,
     sequence INTEGER NOT NULL,
-    source TEXT DEFAULT 'claude',   -- 来源: claude, codex
+    source TEXT DEFAULT 'claude',   -- 来源: claude, codex, opencode
     channel TEXT,                   -- 渠道: code, chat
     model TEXT,                     -- 使用的模型
     tool_call_id TEXT,              -- Tool call ID

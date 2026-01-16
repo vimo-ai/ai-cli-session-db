@@ -13,8 +13,8 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use crate::config::DbConfig;
 use crate::db::{MessageInput, SessionDB};
 use crate::reader::SessionReader;
-use ai_cli_session_collector::MessageType;
 use crate::{ClaudeAdapter, ConversationAdapter};
+use ai_cli_session_collector::MessageType;
 
 /// FFI 友好的错误码
 #[repr(C)]
@@ -275,7 +275,10 @@ pub unsafe extern "C" fn session_db_upsert_project(
             Err(_) => return Err(SessionDbError::InvalidUtf8),
         };
 
-        match handle.db.get_or_create_project(name_str, path_str, source_str) {
+        match handle
+            .db
+            .get_or_create_project(name_str, path_str, source_str)
+        {
             Ok(id) => Ok(id),
             Err(_) => Err(SessionDbError::DatabaseError),
         }
@@ -583,7 +586,10 @@ pub unsafe extern "C" fn session_db_update_session_last_message(
             Ok(s) => s,
             Err(_) => return Err(SessionDbError::InvalidUtf8),
         };
-        match handle.db.update_session_last_message(session_id_str, timestamp) {
+        match handle
+            .db
+            .update_session_last_message(session_id_str, timestamp)
+        {
             Ok(_) => Ok(()),
             Err(_) => Err(SessionDbError::DatabaseError),
         }
@@ -654,8 +660,8 @@ pub unsafe extern "C" fn session_db_insert_messages(
             rust_messages.push(MessageInput {
                 uuid,
                 r#type: msg_type,
-                content_text: content.clone(),  // 向量化用
-                content_full: content,          // FTS 用
+                content_text: content.clone(), // 向量化用
+                content_full: content,         // FTS 用
                 timestamp: msg.timestamp,
                 sequence: msg.sequence,
                 source: None,
@@ -982,7 +988,10 @@ pub unsafe extern "C" fn session_db_search_fts_with_project(
         } else {
             None
         };
-        match handle.db.search_fts_with_project(&escaped_query, limit, pid) {
+        match handle
+            .db
+            .search_fts_with_project(&escaped_query, limit, pid)
+        {
             Ok(results) => Ok(results),
             Err(_) => Err(SessionDbError::DatabaseError),
         }
@@ -1108,11 +1117,26 @@ pub unsafe extern "C" fn session_db_search_fts_full(
             Err(_) => return Err(SessionDbError::InvalidUtf8),
         };
         let escaped_query = escape_fts5_query(query_str);
-        let pid = if project_id >= 0 { Some(project_id) } else { None };
-        let start_ts = if start_timestamp >= 0 { Some(start_timestamp) } else { None };
-        let end_ts = if end_timestamp >= 0 { Some(end_timestamp) } else { None };
+        let pid = if project_id >= 0 {
+            Some(project_id)
+        } else {
+            None
+        };
+        let start_ts = if start_timestamp >= 0 {
+            Some(start_timestamp)
+        } else {
+            None
+        };
+        let end_ts = if end_timestamp >= 0 {
+            Some(end_timestamp)
+        } else {
+            None
+        };
         let order: crate::types::SearchOrderBy = order_by.into();
-        match handle.db.search_fts_full(&escaped_query, limit, pid, order, start_ts, end_ts) {
+        match handle
+            .db
+            .search_fts_full(&escaped_query, limit, pid, order, start_ts, end_ts)
+        {
             Ok(results) => Ok(results),
             Err(_) => Err(SessionDbError::DatabaseError),
         }
@@ -1208,7 +1232,10 @@ pub unsafe extern "C" fn session_db_search_fts_with_options(
             None
         };
         let order: crate::types::SearchOrderBy = order_by.into();
-        match handle.db.search_fts_with_options(&escaped_query, limit, pid, order) {
+        match handle
+            .db
+            .search_fts_with_options(&escaped_query, limit, pid, order)
+        {
             Ok(results) => Ok(results),
             Err(_) => Err(SessionDbError::DatabaseError),
         }
@@ -1322,7 +1349,11 @@ pub unsafe extern "C" fn session_db_update_approval_status_by_tool_call_id(
 
         let rust_status: crate::types::ApprovalStatus = status.into();
 
-        match handle.db.update_approval_status_by_tool_call_id(tool_call_id_str, rust_status, resolved_at) {
+        match handle.db.update_approval_status_by_tool_call_id(
+            tool_call_id_str,
+            rust_status,
+            resolved_at,
+        ) {
             Ok(count) => Ok(count),
             Err(_) => Err(SessionDbError::DatabaseError),
         }
@@ -1402,9 +1433,7 @@ pub struct ParseResult {
 /// - `jsonl_path` 必须是有效的 UTF-8 C 字符串
 /// - 返回的 ParseResult.session 需要调用 `session_db_free_parse_result` 释放
 #[no_mangle]
-pub unsafe extern "C" fn session_db_parse_jsonl(
-    jsonl_path: *const c_char,
-) -> ParseResult {
+pub unsafe extern "C" fn session_db_parse_jsonl(jsonl_path: *const c_char) -> ParseResult {
     use crate::ClaudeAdapter;
 
     if jsonl_path.is_null() {
@@ -1438,9 +1467,15 @@ pub unsafe extern "C" fn session_db_parse_jsonl(
                     Err(_) => {
                         // 清理已分配的内存
                         for m in c_messages {
-                            if !m.uuid.is_null() { drop(CString::from_raw(m.uuid)); }
-                            if !m.role.is_null() { drop(CString::from_raw(m.role)); }
-                            if !m.content.is_null() { drop(CString::from_raw(m.content)); }
+                            if !m.uuid.is_null() {
+                                drop(CString::from_raw(m.uuid));
+                            }
+                            if !m.role.is_null() {
+                                drop(CString::from_raw(m.role));
+                            }
+                            if !m.content.is_null() {
+                                drop(CString::from_raw(m.content));
+                            }
                         }
                         return ParseResult {
                             session: std::ptr::null_mut(),
@@ -1453,9 +1488,15 @@ pub unsafe extern "C" fn session_db_parse_jsonl(
                     Err(_) => {
                         drop(CString::from_raw(uuid));
                         for m in c_messages {
-                            if !m.uuid.is_null() { drop(CString::from_raw(m.uuid)); }
-                            if !m.role.is_null() { drop(CString::from_raw(m.role)); }
-                            if !m.content.is_null() { drop(CString::from_raw(m.content)); }
+                            if !m.uuid.is_null() {
+                                drop(CString::from_raw(m.uuid));
+                            }
+                            if !m.role.is_null() {
+                                drop(CString::from_raw(m.role));
+                            }
+                            if !m.content.is_null() {
+                                drop(CString::from_raw(m.content));
+                            }
                         }
                         return ParseResult {
                             session: std::ptr::null_mut(),
@@ -1470,9 +1511,15 @@ pub unsafe extern "C" fn session_db_parse_jsonl(
                         drop(CString::from_raw(uuid));
                         drop(CString::from_raw(role));
                         for m in c_messages {
-                            if !m.uuid.is_null() { drop(CString::from_raw(m.uuid)); }
-                            if !m.role.is_null() { drop(CString::from_raw(m.role)); }
-                            if !m.content.is_null() { drop(CString::from_raw(m.content)); }
+                            if !m.uuid.is_null() {
+                                drop(CString::from_raw(m.uuid));
+                            }
+                            if !m.role.is_null() {
+                                drop(CString::from_raw(m.role));
+                            }
+                            if !m.content.is_null() {
+                                drop(CString::from_raw(m.content));
+                            }
                         }
                         return ParseResult {
                             session: std::ptr::null_mut(),
@@ -1495,9 +1542,15 @@ pub unsafe extern "C" fn session_db_parse_jsonl(
                 Ok(s) => s.into_raw(),
                 Err(_) => {
                     for m in c_messages {
-                        if !m.uuid.is_null() { drop(CString::from_raw(m.uuid)); }
-                        if !m.role.is_null() { drop(CString::from_raw(m.role)); }
-                        if !m.content.is_null() { drop(CString::from_raw(m.content)); }
+                        if !m.uuid.is_null() {
+                            drop(CString::from_raw(m.uuid));
+                        }
+                        if !m.role.is_null() {
+                            drop(CString::from_raw(m.role));
+                        }
+                        if !m.content.is_null() {
+                            drop(CString::from_raw(m.content));
+                        }
                     }
                     return ParseResult {
                         session: std::ptr::null_mut(),
@@ -1510,9 +1563,15 @@ pub unsafe extern "C" fn session_db_parse_jsonl(
                 Err(_) => {
                     drop(CString::from_raw(session_id));
                     for m in c_messages {
-                        if !m.uuid.is_null() { drop(CString::from_raw(m.uuid)); }
-                        if !m.role.is_null() { drop(CString::from_raw(m.role)); }
-                        if !m.content.is_null() { drop(CString::from_raw(m.content)); }
+                        if !m.uuid.is_null() {
+                            drop(CString::from_raw(m.uuid));
+                        }
+                        if !m.role.is_null() {
+                            drop(CString::from_raw(m.role));
+                        }
+                        if !m.content.is_null() {
+                            drop(CString::from_raw(m.content));
+                        }
                     }
                     return ParseResult {
                         session: std::ptr::null_mut(),
@@ -1526,9 +1585,15 @@ pub unsafe extern "C" fn session_db_parse_jsonl(
                     drop(CString::from_raw(session_id));
                     drop(CString::from_raw(project_path));
                     for m in c_messages {
-                        if !m.uuid.is_null() { drop(CString::from_raw(m.uuid)); }
-                        if !m.role.is_null() { drop(CString::from_raw(m.role)); }
-                        if !m.content.is_null() { drop(CString::from_raw(m.content)); }
+                        if !m.uuid.is_null() {
+                            drop(CString::from_raw(m.uuid));
+                        }
+                        if !m.role.is_null() {
+                            drop(CString::from_raw(m.role));
+                        }
+                        if !m.content.is_null() {
+                            drop(CString::from_raw(m.content));
+                        }
                     }
                     return ParseResult {
                         session: std::ptr::null_mut(),
@@ -1665,7 +1730,7 @@ pub unsafe extern "C" fn session_db_get_session_path(
         PathBuf::from(path_str)
     };
 
-    let mut reader = SessionReader::new(path);
+    let reader = SessionReader::new(path);
     match reader.get_session_path(session_id_str) {
         Some(session_path) => match CString::new(session_path) {
             Ok(s) => s.into_raw(),
@@ -1727,6 +1792,63 @@ pub unsafe extern "C" fn session_db_get_encoded_dir_name(
     }
 }
 
+/// 计算会话文件路径
+///
+/// 根据 encoded_dir_name 和 session_id 直接计算路径，无需搜索。
+/// 路径规则: `{projects_path}/{encoded_dir_name}/{session_id}.jsonl`
+///
+/// # 参数
+/// - `projects_path`: Claude projects 目录路径，null 使用默认路径
+/// - `encoded_dir_name`: 项目的编码目录名
+/// - `session_id`: 会话 ID
+///
+/// # 返回
+/// - 成功：返回计算出的路径（不检查文件是否存在）
+/// - 失败：返回 null
+///
+/// # Safety
+/// - 返回的字符串需要调用 `session_db_free_string` 释放
+#[no_mangle]
+pub unsafe extern "C" fn session_db_compute_session_path(
+    projects_path: *const c_char,
+    encoded_dir_name: *const c_char,
+    session_id: *const c_char,
+) -> *mut c_char {
+    if encoded_dir_name.is_null() || session_id.is_null() {
+        return std::ptr::null_mut();
+    }
+
+    let encoded_dir_str = match CStr::from_ptr(encoded_dir_name).to_str() {
+        Ok(s) => s,
+        Err(_) => return std::ptr::null_mut(),
+    };
+
+    let session_id_str = match CStr::from_ptr(session_id).to_str() {
+        Ok(s) => s,
+        Err(_) => return std::ptr::null_mut(),
+    };
+
+    let path = if projects_path.is_null() {
+        let home = match std::env::var("HOME") {
+            Ok(h) => h,
+            Err(_) => return std::ptr::null_mut(),
+        };
+        PathBuf::from(home).join(".claude/projects")
+    } else {
+        let path_str = match CStr::from_ptr(projects_path).to_str() {
+            Ok(s) => s,
+            Err(_) => return std::ptr::null_mut(),
+        };
+        PathBuf::from(path_str)
+    };
+
+    let session_path = crate::reader::compute_session_path(&path, encoded_dir_str, session_id_str);
+    match CString::new(session_path.to_string_lossy().to_string()) {
+        Ok(s) => s.into_raw(),
+        Err(_) => std::ptr::null_mut(),
+    }
+}
+
 // ==================== 项目/会话列表 ====================
 
 /// ProjectInfo C 结构体
@@ -1780,7 +1902,11 @@ pub unsafe extern "C" fn session_db_list_file_projects(
 
         // 使用 SessionReader 统一的业务逻辑
         let mut reader = SessionReader::new(path);
-        let limit_opt = if limit > 0 { Some(limit as usize) } else { None };
+        let limit_opt = if limit > 0 {
+            Some(limit as usize)
+        } else {
+            None
+        };
         let projects = reader.list_projects(limit_opt);
 
         Ok(projects)
@@ -1869,7 +1995,7 @@ pub struct SessionMetaC {
     pub project_name: *mut c_char,
     pub encoded_dir_name: *mut c_char,
     pub session_path: *mut c_char,
-    pub file_mtime: i64, // -1 表示无
+    pub file_mtime: i64,    // -1 表示无
     pub message_count: i64, // -1 表示无
 }
 
@@ -2107,9 +2233,13 @@ pub unsafe extern "C" fn session_db_find_latest_session(
         encoded_dir_name: if first.encoded_dir_name.is_null() {
             std::ptr::null_mut()
         } else {
-            CString::new(CStr::from_ptr(first.encoded_dir_name).to_str().unwrap_or(""))
-                .map(|s| s.into_raw())
-                .unwrap_or(std::ptr::null_mut())
+            CString::new(
+                CStr::from_ptr(first.encoded_dir_name)
+                    .to_str()
+                    .unwrap_or(""),
+            )
+            .map(|s| s.into_raw())
+            .unwrap_or(std::ptr::null_mut())
         },
         session_path: if first.session_path.is_null() {
             std::ptr::null_mut()
@@ -2229,7 +2359,7 @@ pub unsafe extern "C" fn session_db_read_session_messages(
         // 使用默认路径创建 adapter
         let home = std::env::var("HOME").map_err(|_| SessionDbError::Unknown)?;
         let projects_path = PathBuf::from(home).join(".claude/projects");
-        let adapter = ClaudeAdapter::new(projects_path);
+        let adapter = ClaudeAdapter::with_path(projects_path);
 
         let parse_result = adapter
             .parse_session(&meta)

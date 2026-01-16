@@ -12,7 +12,7 @@ use std::path::Path;
 use std::sync::Arc;
 
 #[cfg(feature = "coordination")]
-use crate::coordination::{Coordinator, CoordinationConfig, Role, WriterHealth, WriterType};
+use crate::coordination::{CoordinationConfig, Coordinator, Role, WriterHealth, WriterType};
 
 /// 数据库连接
 pub struct SessionDB {
@@ -85,7 +85,9 @@ impl SessionDB {
     #[cfg(feature = "coordination")]
     /// 更新心跳 (Writer 定期调用)
     pub fn heartbeat(&self) -> Result<()> {
-        let coordinator = self.coordinator.as_ref()
+        let coordinator = self
+            .coordinator
+            .as_ref()
             .ok_or_else(|| Error::Coordination("未注册为 Writer".into()))?;
         let conn = self.conn.lock();
         coordinator.heartbeat(&conn)
@@ -104,7 +106,9 @@ impl SessionDB {
     #[cfg(feature = "coordination")]
     /// 检查 Writer 健康状态 (Reader 调用)
     pub fn check_writer_health(&self) -> Result<WriterHealth> {
-        let coordinator = self.coordinator.as_ref()
+        let coordinator = self
+            .coordinator
+            .as_ref()
             .ok_or_else(|| Error::Coordination("未注册".into()))?;
         let conn = self.conn.lock();
         coordinator.check_writer_health(&conn)
@@ -113,7 +117,9 @@ impl SessionDB {
     #[cfg(feature = "coordination")]
     /// 尝试接管 Writer (Reader 在检测到超时后调用)
     pub fn try_takeover(&mut self) -> Result<bool> {
-        let coordinator = self.coordinator.as_ref()
+        let coordinator = self
+            .coordinator
+            .as_ref()
             .ok_or_else(|| Error::Coordination("未注册".into()))?;
         let conn = self.conn.lock();
         coordinator.try_takeover(&conn)
@@ -202,7 +208,11 @@ impl SessionDB {
     }
 
     /// 获取所有 Projects（带统计信息，支持分页）
-    pub fn list_projects_with_stats(&self, limit: usize, offset: usize) -> Result<Vec<ProjectWithStats>> {
+    pub fn list_projects_with_stats(
+        &self,
+        limit: usize,
+        offset: usize,
+    ) -> Result<Vec<ProjectWithStats>> {
         let conn = self.conn.lock();
         let mut stmt = conn.prepare(
             r#"
@@ -307,8 +317,8 @@ impl SessionDB {
 
         conn.execute(
             r#"
-            INSERT INTO sessions (session_id, project_id, cwd, model, channel, message_count, file_mtime, file_size, encoded_dir_name, meta, created_at, updated_at)
-            VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?11)
+            INSERT INTO sessions (session_id, project_id, cwd, model, channel, message_count, file_mtime, file_size, meta, created_at, updated_at)
+            VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?10)
             ON CONFLICT(session_id) DO UPDATE SET
                 cwd = COALESCE(excluded.cwd, sessions.cwd),
                 model = COALESCE(excluded.model, sessions.model),
@@ -316,7 +326,6 @@ impl SessionDB {
                 message_count = COALESCE(excluded.message_count, sessions.message_count),
                 file_mtime = COALESCE(excluded.file_mtime, sessions.file_mtime),
                 file_size = COALESCE(excluded.file_size, sessions.file_size),
-                encoded_dir_name = COALESCE(excluded.encoded_dir_name, sessions.encoded_dir_name),
                 meta = COALESCE(excluded.meta, sessions.meta),
                 updated_at = excluded.updated_at
             "#,
@@ -329,7 +338,6 @@ impl SessionDB {
                 input.message_count,
                 input.file_mtime,
                 input.file_size,
-                input.encoded_dir_name,
                 input.meta,
                 now,
             ],
@@ -344,7 +352,7 @@ impl SessionDB {
         let mut stmt = conn.prepare(
             r#"
             SELECT id, session_id, project_id, message_count, last_message_at,
-                   cwd, model, channel, file_mtime, file_size, encoded_dir_name, meta,
+                   cwd, model, channel, file_mtime, file_size, meta,
                    created_at, updated_at
             FROM sessions
             WHERE project_id = ?1
@@ -364,10 +372,9 @@ impl SessionDB {
                 channel: row.get(7)?,
                 file_mtime: row.get(8)?,
                 file_size: row.get(9)?,
-                encoded_dir_name: row.get(10)?,
-                meta: row.get(11)?,
-                created_at: row.get(12)?,
-                updated_at: row.get(13)?,
+                meta: row.get(10)?,
+                created_at: row.get(11)?,
+                updated_at: row.get(12)?,
             })
         })?;
 
@@ -376,7 +383,12 @@ impl SessionDB {
     }
 
     /// 根据项目路径列出会话（带项目信息，支持分页）
-    pub fn list_sessions_by_project_path(&self, project_path: &str, limit: usize, offset: usize) -> Result<Vec<SessionWithProject>> {
+    pub fn list_sessions_by_project_path(
+        &self,
+        project_path: &str,
+        limit: usize,
+        offset: usize,
+    ) -> Result<Vec<SessionWithProject>> {
         let conn = self.conn.lock();
         let mut stmt = conn.prepare(
             r#"
@@ -423,7 +435,7 @@ impl SessionDB {
         conn.query_row(
             r#"
             SELECT id, session_id, project_id, message_count, last_message_at,
-                   cwd, model, channel, file_mtime, file_size, encoded_dir_name, meta,
+                   cwd, model, channel, file_mtime, file_size, meta,
                    created_at, updated_at
             FROM sessions
             WHERE session_id = ?1
@@ -441,10 +453,9 @@ impl SessionDB {
                     channel: row.get(7)?,
                     file_mtime: row.get(8)?,
                     file_size: row.get(9)?,
-                    encoded_dir_name: row.get(10)?,
-                    meta: row.get(11)?,
-                    created_at: row.get(12)?,
-                    updated_at: row.get(13)?,
+                    meta: row.get(10)?,
+                    created_at: row.get(11)?,
+                    updated_at: row.get(12)?,
                 })
             },
         )
@@ -489,24 +500,28 @@ impl SessionDB {
     pub fn get_sessions(&self, project_id: Option<i64>, limit: usize) -> Result<Vec<Session>> {
         let conn = self.conn.lock();
 
-        let (sql, params_vec): (&str, Vec<Box<dyn rusqlite::ToSql>>) = if let Some(pid) = project_id {
+        let (sql, params_vec): (&str, Vec<Box<dyn rusqlite::ToSql>>) = if let Some(pid) = project_id
+        {
             (
                 r#"
                 SELECT id, session_id, project_id, message_count, last_message_at,
-                       cwd, model, channel, file_mtime, file_size, encoded_dir_name, meta,
+                       cwd, model, channel, file_mtime, file_size, meta,
                        created_at, updated_at
                 FROM sessions
                 WHERE project_id = ?1
                 ORDER BY updated_at DESC
                 LIMIT ?2
                 "#,
-                vec![Box::new(pid) as Box<dyn rusqlite::ToSql>, Box::new(limit as i64)],
+                vec![
+                    Box::new(pid) as Box<dyn rusqlite::ToSql>,
+                    Box::new(limit as i64),
+                ],
             )
         } else {
             (
                 r#"
                 SELECT id, session_id, project_id, message_count, last_message_at,
-                       cwd, model, channel, file_mtime, file_size, encoded_dir_name, meta,
+                       cwd, model, channel, file_mtime, file_size, meta,
                        created_at, updated_at
                 FROM sessions
                 ORDER BY updated_at DESC
@@ -517,7 +532,8 @@ impl SessionDB {
         };
 
         let mut stmt = conn.prepare(sql)?;
-        let params_refs: Vec<&dyn rusqlite::ToSql> = params_vec.iter().map(|p| p.as_ref()).collect();
+        let params_refs: Vec<&dyn rusqlite::ToSql> =
+            params_vec.iter().map(|p| p.as_ref()).collect();
 
         let rows = stmt.query_map(params_refs.as_slice(), |row| {
             Ok(Session {
@@ -531,10 +547,9 @@ impl SessionDB {
                 channel: row.get(7)?,
                 file_mtime: row.get(8)?,
                 file_size: row.get(9)?,
-                encoded_dir_name: row.get(10)?,
-                meta: row.get(11)?,
-                created_at: row.get(12)?,
-                updated_at: row.get(13)?,
+                meta: row.get(10)?,
+                created_at: row.get(11)?,
+                updated_at: row.get(12)?,
             })
         })?;
 
@@ -563,7 +578,7 @@ impl SessionDB {
         let mut stmt = conn.prepare(
             r#"
             SELECT id, session_id, project_id, message_count, last_message_at,
-                   cwd, model, channel, file_mtime, file_size, encoded_dir_name, meta,
+                   cwd, model, channel, file_mtime, file_size, meta,
                    created_at, updated_at
             FROM sessions
             WHERE session_id LIKE ?1
@@ -584,10 +599,9 @@ impl SessionDB {
                 channel: row.get(7)?,
                 file_mtime: row.get(8)?,
                 file_size: row.get(9)?,
-                encoded_dir_name: row.get(10)?,
-                meta: row.get(11)?,
-                created_at: row.get(12)?,
-                updated_at: row.get(13)?,
+                meta: row.get(10)?,
+                created_at: row.get(11)?,
+                updated_at: row.get(12)?,
             })
         })?;
 
@@ -738,7 +752,9 @@ impl SessionDB {
                 tool_args: row.get(13)?,
                 raw: row.get(14)?,
                 vector_indexed: vector_indexed != 0,
-                approval_status: row.get::<_, Option<String>>(16)?.and_then(|s| s.parse().ok()),
+                approval_status: row
+                    .get::<_, Option<String>>(16)?
+                    .and_then(|s| s.parse().ok()),
                 approval_resolved_at: row.get(17)?,
             })
         })?;
@@ -800,7 +816,9 @@ impl SessionDB {
                 tool_args: row.get(13)?,
                 raw: row.get(14)?,
                 vector_indexed: vector_indexed != 0,
-                approval_status: row.get::<_, Option<String>>(16)?.and_then(|s| s.parse().ok()),
+                approval_status: row
+                    .get::<_, Option<String>>(16)?
+                    .and_then(|s| s.parse().ok()),
                 approval_resolved_at: row.get(17)?,
             })
         })?;
@@ -867,7 +885,9 @@ impl SessionDB {
                 tool_args: row.get(13)?,
                 raw: row.get(14)?,
                 vector_indexed: vector_indexed != 0,
-                approval_status: row.get::<_, Option<String>>(16)?.and_then(|s| s.parse().ok()),
+                approval_status: row
+                    .get::<_, Option<String>>(16)?
+                    .and_then(|s| s.parse().ok()),
                 approval_resolved_at: row.get(17)?,
             })
         })?;
@@ -883,7 +903,11 @@ impl SessionDB {
         }
 
         let conn = self.conn.lock();
-        let placeholders: String = message_ids.iter().map(|_| "?").collect::<Vec<_>>().join(",");
+        let placeholders: String = message_ids
+            .iter()
+            .map(|_| "?")
+            .collect::<Vec<_>>()
+            .join(",");
         let sql = format!(
             "UPDATE messages SET vector_indexed = 1 WHERE id IN ({})",
             placeholders
@@ -928,7 +952,11 @@ impl SessionDB {
         }
 
         let conn = self.conn.lock();
-        let placeholders: String = message_ids.iter().map(|_| "?").collect::<Vec<_>>().join(",");
+        let placeholders: String = message_ids
+            .iter()
+            .map(|_| "?")
+            .collect::<Vec<_>>()
+            .join(",");
         let sql = format!(
             "UPDATE messages SET vector_indexed = -1 WHERE id IN ({})",
             placeholders
@@ -980,7 +1008,9 @@ impl SessionDB {
                 tool_args: row.get(13)?,
                 raw: row.get(14)?,
                 vector_indexed: vector_indexed != 0,
-                approval_status: row.get::<_, Option<String>>(16)?.and_then(|s| s.parse().ok()),
+                approval_status: row
+                    .get::<_, Option<String>>(16)?
+                    .and_then(|s| s.parse().ok()),
                 approval_resolved_at: row.get(17)?,
             })
         })?;
@@ -1031,7 +1061,8 @@ impl SessionDB {
         );
 
         let mut stmt = conn.prepare(&sql)?;
-        let params: Vec<&dyn rusqlite::ToSql> = ids.iter().map(|id| id as &dyn rusqlite::ToSql).collect();
+        let params: Vec<&dyn rusqlite::ToSql> =
+            ids.iter().map(|id| id as &dyn rusqlite::ToSql).collect();
 
         let rows = stmt.query_map(params.as_slice(), |row| {
             let type_str: String = row.get(3)?;
@@ -1053,7 +1084,9 @@ impl SessionDB {
                 tool_args: row.get(13)?,
                 raw: row.get(14)?,
                 vector_indexed: vector_indexed != 0,
-                approval_status: row.get::<_, Option<String>>(16)?.and_then(|s| s.parse().ok()),
+                approval_status: row
+                    .get::<_, Option<String>>(16)?
+                    .and_then(|s| s.parse().ok()),
                 approval_resolved_at: row.get(17)?,
             })
         })?;
@@ -1100,7 +1133,9 @@ impl SessionDB {
                 tool_args: row.get(13)?,
                 raw: row.get(14)?,
                 vector_indexed: vector_indexed != 0,
-                approval_status: row.get::<_, Option<String>>(16)?.and_then(|s| s.parse().ok()),
+                approval_status: row
+                    .get::<_, Option<String>>(16)?
+                    .and_then(|s| s.parse().ok()),
                 approval_resolved_at: row.get(17)?,
             })
         })?;
@@ -1180,10 +1215,8 @@ impl SessionDB {
         );
 
         let status_str = status.to_string();
-        let mut params_vec: Vec<Box<dyn rusqlite::ToSql>> = vec![
-            Box::new(status_str),
-            Box::new(resolved_at),
-        ];
+        let mut params_vec: Vec<Box<dyn rusqlite::ToSql>> =
+            vec![Box::new(status_str), Box::new(resolved_at)];
         for uuid in uuids {
             params_vec.push(Box::new(uuid.clone()));
         }
@@ -1234,9 +1267,7 @@ impl SessionDB {
     /// 获取所有项目（带 source 字段）
     pub fn get_all_projects_with_source(&self) -> Result<Vec<ProjectWithSource>> {
         let conn = self.conn.lock();
-        let mut stmt = conn.prepare(
-            "SELECT id, name, path, source FROM projects",
-        )?;
+        let mut stmt = conn.prepare("SELECT id, name, path, source FROM projects")?;
 
         let rows = stmt.query_map([], |row| {
             Ok(ProjectWithSource {
@@ -1252,7 +1283,11 @@ impl SessionDB {
     }
 
     /// 更新会话的项目 ID
-    pub fn update_sessions_project_id(&self, from_project_id: i64, to_project_id: i64) -> Result<usize> {
+    pub fn update_sessions_project_id(
+        &self,
+        from_project_id: i64,
+        to_project_id: i64,
+    ) -> Result<usize> {
         let conn = self.conn.lock();
         let count = conn.execute(
             "UPDATE sessions SET project_id = ?1 WHERE project_id = ?2",
@@ -1337,7 +1372,10 @@ impl SessionDB {
                 "去重项目 path={}: 保留 ID {}, 删除 {:?}",
                 path,
                 keep_id,
-                &project_sessions[1..].iter().map(|(id, _)| id).collect::<Vec<_>>()
+                &project_sessions[1..]
+                    .iter()
+                    .map(|(id, _)| id)
+                    .collect::<Vec<_>>()
             );
         }
 
@@ -1368,7 +1406,6 @@ pub struct SessionInput {
     pub file_mtime: Option<i64>,
     pub file_size: Option<i64>,
     // 额外元信息
-    pub encoded_dir_name: Option<String>,
     pub meta: Option<String>,
 }
 
@@ -1377,8 +1414,8 @@ pub struct SessionInput {
 pub struct MessageInput {
     pub uuid: String,
     pub r#type: MessageType,
-    pub content_text: String,  // 纯对话文本（用于向量化）
-    pub content_full: String,  // 完整格式化内容（用于 FTS）
+    pub content_text: String, // 纯对话文本（用于向量化）
+    pub content_full: String, // 完整格式化内容（用于 FTS）
     pub timestamp: i64,
     pub sequence: i64,
     pub source: Option<String>,
@@ -1388,8 +1425,8 @@ pub struct MessageInput {
     pub tool_name: Option<String>,
     pub tool_args: Option<String>,
     pub raw: Option<String>,
-    pub approval_status: Option<crate::types::ApprovalStatus>,  // 审批状态: pending, approved, rejected, timeout
-    pub approval_resolved_at: Option<i64>,  // 审批解决时间戳（毫秒）
+    pub approval_status: Option<crate::types::ApprovalStatus>, // 审批状态: pending, approved, rejected, timeout
+    pub approval_resolved_at: Option<i64>,                     // 审批解决时间戳（毫秒）
 }
 
 /// 获取当前时间戳 (毫秒)

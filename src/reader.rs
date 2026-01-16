@@ -14,7 +14,10 @@ use std::io::{BufRead, BufReader};
 use std::path::PathBuf;
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use crate::{ClaudeAdapter, ConversationAdapter, MessageType, ParsedMessage, ParseResult, SessionMeta, Source};
+use crate::{
+    ClaudeAdapter, ConversationAdapter, MessageType, ParseResult, ParsedMessage, SessionMeta,
+    Source,
+};
 
 /// 排序方向
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -64,6 +67,19 @@ pub struct SessionMetrics {
     pub duration_seconds: Option<u64>,
 }
 
+/// 计算会话文件路径
+///
+/// 路径规则: `{projects_path}/{encoded_dir_name}/{session_id}.jsonl`
+pub fn compute_session_path(
+    projects_path: &std::path::Path,
+    encoded_dir_name: &str,
+    session_id: &str,
+) -> PathBuf {
+    projects_path
+        .join(encoded_dir_name)
+        .join(format!("{}.jsonl", session_id))
+}
+
 /// 统一的会话读取器
 ///
 /// 提供读取 Claude Code 会话数据的所有功能。
@@ -73,8 +89,6 @@ pub struct SessionReader {
     projects_path: PathBuf,
     /// 内部 adapter
     adapter: ClaudeAdapter,
-    /// 路径缓存: session_id -> session_path
-    session_path_cache: HashMap<String, String>,
     /// 编码目录名缓存: project_path -> encoded_dir_name
     encoded_dir_cache: HashMap<String, String>,
 }
@@ -82,11 +96,10 @@ pub struct SessionReader {
 impl SessionReader {
     /// 创建读取器
     pub fn new(projects_path: PathBuf) -> Self {
-        let adapter = ClaudeAdapter::new(projects_path.clone());
+        let adapter = ClaudeAdapter::with_path(projects_path.clone());
         Self {
             projects_path,
             adapter,
-            session_path_cache: HashMap::new(),
             encoded_dir_cache: HashMap::new(),
         }
     }
@@ -202,12 +215,6 @@ impl SessionReader {
 
             session_count += 1;
 
-            // 缓存 session_path
-            self.session_path_cache.insert(
-                session_id.to_string(),
-                file_path.to_string_lossy().to_string(),
-            );
-
             // 获取文件修改时间
             if let Ok(meta) = fs::metadata(&file_path) {
                 if let Ok(mtime) = meta.modified() {
@@ -267,12 +274,8 @@ impl SessionReader {
             Err(_) => return vec![],
         };
 
-        // 更新缓存
+        // 更新 encoded_dir_cache
         for session in &sessions {
-            if let Some(path) = &session.session_path {
-                self.session_path_cache
-                    .insert(session.id.clone(), path.clone());
-            }
             if let Some(encoded) = &session.encoded_dir_name {
                 self.encoded_dir_cache
                     .insert(session.project_path.clone(), encoded.clone());
@@ -328,18 +331,36 @@ impl SessionReader {
 
     /// 获取会话文件路径
     ///
-    /// 优先从缓存获取，避免使用 encode_path 计算
-    pub fn get_session_path(&mut self, session_id: &str) -> Option<String> {
-        // 先查缓存
-        if let Some(path) = self.session_path_cache.get(session_id) {
-            return Some(path.clone());
+    /// 在 projects_path 下搜索 `{session_id}.jsonl` 文件
+    pub fn get_session_path(&self, session_id: &str) -> Option<String> {
+        let target_filename = format!("{}.jsonl", session_id);
+
+        // 遍历所有项目目录
+        let entries = fs::read_dir(&self.projects_path).ok()?;
+        for entry in entries.flatten() {
+            let project_dir = entry.path();
+            if !project_dir.is_dir() {
+                continue;
+            }
+
+            // 跳过隐藏目录
+            if project_dir
+                .file_name()
+                .and_then(|s| s.to_str())
+                .map(|s| s.starts_with('.'))
+                .unwrap_or(true)
+            {
+                continue;
+            }
+
+            // 检查文件是否存在
+            let session_path = project_dir.join(&target_filename);
+            if session_path.is_file() {
+                return Some(session_path.to_string_lossy().to_string());
+            }
         }
 
-        // 缓存未命中，刷新会话列表
-        let _ = self.list_sessions(None, true);
-
-        // 再次查缓存
-        self.session_path_cache.get(session_id).cloned()
+        None
     }
 
     /// 获取项目的编码目录名
@@ -522,5 +543,31 @@ mod tests {
             "project"
         );
         assert_eq!(SessionReader::extract_project_name("/a/b/c/d"), "d");
+    }
+
+    #[test]
+    fn test_compute_session_path() {
+        let projects_path = PathBuf::from("/home/user/.claude/projects");
+        let encoded_dir = "-Users-xxx-project";
+        let session_id = "abc123";
+
+        let result = compute_session_path(&projects_path, encoded_dir, session_id);
+        assert_eq!(
+            result,
+            PathBuf::from("/home/user/.claude/projects/-Users-xxx-project/abc123.jsonl")
+        );
+    }
+
+    #[test]
+    fn test_compute_session_path_with_uuid() {
+        let projects_path = PathBuf::from("/Users/test/.claude/projects");
+        let encoded_dir = "-Users-test-Desktop-myproject";
+        let session_id = "550e8400-e29b-41d4-a716-446655440000";
+
+        let result = compute_session_path(&projects_path, encoded_dir, session_id);
+        assert_eq!(
+            result,
+            PathBuf::from("/Users/test/.claude/projects/-Users-test-Desktop-myproject/550e8400-e29b-41d4-a716-446655440000.jsonl")
+        );
     }
 }

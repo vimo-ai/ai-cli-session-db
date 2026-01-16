@@ -68,7 +68,6 @@ pub struct Session {
     pub file_mtime: Option<i64>,
     pub file_size: Option<i64>,
     // 额外元信息
-    pub encoded_dir_name: Option<String>,
     pub meta: Option<String>,
     // 时间戳
     pub created_at: i64,
@@ -94,8 +93,8 @@ pub struct Message {
     pub session_id: String,
     pub uuid: String,
     pub r#type: MessageType,
-    pub content_text: String,  // 纯对话文本（用于向量化）
-    pub content_full: String,  // 完整格式化内容（用于 FTS）
+    pub content_text: String, // 纯对话文本（用于向量化）
+    pub content_full: String, // 完整格式化内容（用于 FTS）
     pub timestamp: i64,
     pub sequence: i64,
     pub source: Option<String>,
@@ -105,9 +104,9 @@ pub struct Message {
     pub tool_name: Option<String>,
     pub tool_args: Option<String>,
     pub raw: Option<String>,
-    pub vector_indexed: bool,  // 是否已向量索引
-    pub approval_status: Option<ApprovalStatus>,  // 审批状态: pending, approved, rejected, timeout
-    pub approval_resolved_at: Option<i64>,  // 审批解决时间戳（毫秒）
+    pub vector_indexed: bool,                    // 是否已向量索引
+    pub approval_status: Option<ApprovalStatus>, // 审批状态: pending, approved, rejected, timeout
+    pub approval_resolved_at: Option<i64>,       // 审批解决时间戳（毫秒）
 }
 
 // MessageType 直接使用 ai_cli_session_collector::MessageType，在 lib.rs 中 re-export
@@ -133,7 +132,7 @@ pub struct SearchResult {
     pub project_id: i64,
     pub project_name: String,
     pub r#type: String,
-    pub content_full: String,  // FTS 搜索使用 content_full
+    pub content_full: String, // FTS 搜索使用 content_full
     pub snippet: String,
     pub score: f64,
     pub timestamp: Option<i64>,
@@ -158,7 +157,7 @@ pub struct ProjectWithStats {
     pub path: String,
     pub session_count: i64,
     pub message_count: i64,
-    pub last_active: Option<i64>,  // 最后活跃时间（毫秒时间戳）
+    pub last_active: Option<i64>, // 最后活跃时间（毫秒时间戳）
 }
 
 /// 会话（带项目信息）- 用于返回给客户端
