@@ -1,2 +1,3 @@
 /target
 update_plugins.local.sh
+Cargo.lock
