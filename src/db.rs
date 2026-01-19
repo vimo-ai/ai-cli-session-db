@@ -1108,7 +1108,9 @@ impl SessionDB {
     // ==================== 审批操作 ====================
 
     /// 获取待审批的消息
+    ///
     /// - session_id: 会话 ID
+    ///
     /// 返回 approval_status = 'pending' 的消息
     pub fn get_pending_approvals(&self, session_id: &str) -> Result<Vec<Message>> {
         let conn = self.conn.lock();
@@ -1177,9 +1179,11 @@ impl SessionDB {
     }
 
     /// 通过 tool_call_id 更新审批状态
+    ///
     /// - tool_call_id: 工具调用 ID
     /// - status: 审批状态 (approved, rejected, timeout, pending)
     /// - resolved_at: 审批解决时间戳（毫秒，pending 状态时为 0）
+    ///
     /// 返回更新的行数
     pub fn update_approval_status_by_tool_call_id(
         &self,

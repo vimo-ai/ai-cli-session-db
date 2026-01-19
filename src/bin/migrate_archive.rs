@@ -37,7 +37,7 @@ fn main() -> Result<()> {
         let path = Path::new(source);
         if path.is_dir() {
             collect_jsonl_files(path, &mut jsonl_files)?;
-        } else if path.extension().map_or(false, |e| e == "jsonl") {
+        } else if path.extension().is_some_and(|e| e == "jsonl") {
             jsonl_files.push(path.to_path_buf());
         }
     }
@@ -115,7 +115,7 @@ fn collect_jsonl_files(dir: &Path, files: &mut Vec<PathBuf>) -> Result<()> {
         let path = entry.path();
         if path.is_dir() {
             collect_jsonl_files(&path, files)?;
-        } else if path.extension().map_or(false, |e| e == "jsonl") {
+        } else if path.extension().is_some_and(|e| e == "jsonl") {
             files.push(path);
         }
     }

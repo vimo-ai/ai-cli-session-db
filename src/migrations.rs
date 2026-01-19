@@ -69,11 +69,9 @@ fn column_exists(conn: &Connection, table: &str, column: &str) -> SqliteResult<b
         Ok(col_name)
     })?;
 
-    for col in columns {
-        if let Ok(col_name) = col {
-            if col_name == column {
-                return Ok(true);
-            }
+    for col_name in columns.flatten() {
+        if col_name == column {
+            return Ok(true);
         }
     }
 

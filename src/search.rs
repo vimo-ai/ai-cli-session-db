@@ -233,6 +233,7 @@ impl SessionDB {
     /// LIKE 回退搜索（FTS 结果不足时使用）
     ///
     /// 仅在指定 project_id 时使用，因为项目内数据量有限，LIKE 性能可接受
+    #[allow(clippy::too_many_arguments)]
     fn search_like_fallback(
         &self,
         query: &str,
