@@ -1,4 +1,6 @@
 //! 搜索功能
+//!
+//! 搜索策略：FTS5 优先，结果不足时 LIKE 补充
 
 use crate::db::SessionDB;
 use crate::error::Result;
@@ -76,6 +78,8 @@ impl SessionDB {
 
     /// FTS5 全文搜索 (完整参数版本，含日期范围)
     ///
+    /// 搜索策略：FTS5 优先，结果不足且有 project_id 时 LIKE 补充
+    ///
     /// # Arguments
     /// - `query`: 搜索关键词
     /// - `limit`: 返回数量
@@ -84,6 +88,54 @@ impl SessionDB {
     /// - `start_timestamp`: 开始时间戳（毫秒，可选）
     /// - `end_timestamp`: 结束时间戳（毫秒，可选）
     pub fn search_fts_full(
+        &self,
+        query: &str,
+        limit: usize,
+        project_id: Option<i64>,
+        order_by: SearchOrderBy,
+        start_timestamp: Option<i64>,
+        end_timestamp: Option<i64>,
+    ) -> Result<Vec<SearchResult>> {
+        // 先用 FTS5 搜索
+        let fts_results = self.search_fts_internal(
+            query,
+            limit,
+            project_id,
+            order_by,
+            start_timestamp,
+            end_timestamp,
+        )?;
+
+        // FTS 结果足够，直接返回
+        if fts_results.len() >= limit {
+            return Ok(fts_results);
+        }
+
+        // FTS 结果不足且有 project_id，用 LIKE 补充
+        if project_id.is_some() && fts_results.len() < limit {
+            let existing_ids: Vec<i64> = fts_results.iter().map(|r| r.message_id).collect();
+            let remaining = limit - fts_results.len();
+
+            let like_results = self.search_like_fallback(
+                query,
+                remaining,
+                project_id,
+                order_by,
+                start_timestamp,
+                end_timestamp,
+                &existing_ids,
+            )?;
+
+            let mut combined = fts_results;
+            combined.extend(like_results);
+            return Ok(combined);
+        }
+
+        Ok(fts_results)
+    }
+
+    /// FTS5 内部搜索实现
+    fn search_fts_internal(
         &self,
         query: &str,
         limit: usize,
@@ -145,6 +197,115 @@ impl SessionDB {
                 m.timestamp
             FROM messages_fts
             JOIN messages m ON messages_fts.rowid = m.id
+            JOIN sessions s ON m.session_id = s.session_id
+            JOIN projects p ON s.project_id = p.id
+            WHERE {}
+            {}
+            LIMIT ?{}
+            "#,
+            where_clauses.join(" AND "),
+            order_clause,
+            param_idx
+        );
+
+        let mut stmt = conn.prepare(&sql)?;
+        let params_refs: Vec<&dyn rusqlite::ToSql> =
+            params_vec.iter().map(|p| p.as_ref()).collect();
+
+        let rows = stmt.query_map(params_refs.as_slice(), |row| {
+            Ok(SearchResult {
+                message_id: row.get(0)?,
+                session_id: row.get(1)?,
+                project_id: row.get(2)?,
+                project_name: row.get(3)?,
+                r#type: row.get(4)?,
+                content_full: row.get(5)?,
+                snippet: row.get(6)?,
+                score: row.get(7)?,
+                timestamp: row.get(8)?,
+            })
+        })?;
+
+        rows.collect::<std::result::Result<Vec<_>, _>>()
+            .map_err(Into::into)
+    }
+
+    /// LIKE 回退搜索（FTS 结果不足时使用）
+    ///
+    /// 仅在指定 project_id 时使用，因为项目内数据量有限，LIKE 性能可接受
+    fn search_like_fallback(
+        &self,
+        query: &str,
+        limit: usize,
+        project_id: Option<i64>,
+        order_by: SearchOrderBy,
+        start_timestamp: Option<i64>,
+        end_timestamp: Option<i64>,
+        exclude_ids: &[i64],
+    ) -> Result<Vec<SearchResult>> {
+        let conn = self.conn.lock();
+
+        // 排序子句（LIKE 没有相关性分数，默认按时间）
+        let order_clause = match order_by {
+            SearchOrderBy::Score => "ORDER BY m.timestamp DESC", // 无分数，退化为时间排序
+            SearchOrderBy::TimeDesc => "ORDER BY m.timestamp DESC",
+            SearchOrderBy::TimeAsc => "ORDER BY m.timestamp ASC",
+        };
+
+        // 构建 WHERE 子句
+        let mut where_clauses = vec!["m.content_full LIKE ?1".to_string()];
+        let like_pattern = format!("%{}%", query);
+        let mut params_vec: Vec<Box<dyn rusqlite::ToSql>> =
+            vec![Box::new(like_pattern) as Box<dyn rusqlite::ToSql>];
+        let mut param_idx = 2;
+
+        if let Some(pid) = project_id {
+            where_clauses.push(format!("s.project_id = ?{}", param_idx));
+            params_vec.push(Box::new(pid));
+            param_idx += 1;
+        }
+
+        if let Some(start_ts) = start_timestamp {
+            where_clauses.push(format!("m.timestamp >= ?{}", param_idx));
+            params_vec.push(Box::new(start_ts));
+            param_idx += 1;
+        }
+
+        if let Some(end_ts) = end_timestamp {
+            where_clauses.push(format!("m.timestamp <= ?{}", param_idx));
+            params_vec.push(Box::new(end_ts));
+            param_idx += 1;
+        }
+
+        // 排除已有的 ID
+        if !exclude_ids.is_empty() {
+            let placeholders: Vec<String> = exclude_ids
+                .iter()
+                .enumerate()
+                .map(|(i, _)| format!("?{}", param_idx + i))
+                .collect();
+            where_clauses.push(format!("m.id NOT IN ({})", placeholders.join(", ")));
+            for id in exclude_ids {
+                params_vec.push(Box::new(*id));
+            }
+            param_idx += exclude_ids.len();
+        }
+
+        params_vec.push(Box::new(limit as i64));
+
+        let sql = format!(
+            r#"
+            SELECT
+                m.id,
+                m.session_id,
+                s.project_id,
+                p.name as project_name,
+                m.type,
+                m.content_full,
+                substr(m.content_full, 1, 200) as snippet,
+                0.0 as score,
+                m.timestamp
+            FROM messages m
             JOIN sessions s ON m.session_id = s.session_id
             JOIN projects p ON s.project_id = p.id
             WHERE {}

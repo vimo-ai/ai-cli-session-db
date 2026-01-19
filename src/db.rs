@@ -44,6 +44,16 @@ impl SessionDB {
 
         let conn = Connection::open(path)?;
 
+        // 启用 WAL 模式，防止写入中断导致数据库损坏
+        // - WAL: 写入先到 -wal 文件，主文件不直接修改，即使进程被 kill 也安全
+        // - synchronous=NORMAL: 平衡性能和安全（WAL 模式下足够安全）
+        // - busy_timeout: 多连接时等待锁的超时时间
+        conn.execute_batch(
+            "PRAGMA journal_mode=WAL;
+             PRAGMA synchronous=NORMAL;
+             PRAGMA busy_timeout=5000;",
+        )?;
+
         // 执行数据库迁移（先于 schema，为老数据库添加缺失的列）
         // 注意：如果是新数据库，迁移会跳过（表不存在）
         migrations::run_migrations(&conn)?;
