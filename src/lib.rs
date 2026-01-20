@@ -64,7 +64,7 @@ pub mod ffi;
 
 // Re-exports
 pub use config::DbConfig;
-pub use db::{MessageInput, ProjectWithSource, SessionDB, SessionInput};
+pub use db::{IntegrityCheckResult, MessageInput, ProjectWithSource, SessionDB, SessionInput};
 pub use error::{Error, Result};
 pub use reader::{
     MessagesResult, Order, ProjectInfo, RawMessagesResult, SessionMetrics, SessionReader,

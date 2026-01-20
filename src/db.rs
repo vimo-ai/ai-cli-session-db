@@ -1451,6 +1451,54 @@ fn current_time_ms() -> i64 {
         .unwrap_or(0)
 }
 
+/// 数据库完整性检查结果
+#[derive(Debug, Clone)]
+pub enum IntegrityCheckResult {
+    /// 数据库完整
+    Ok,
+    /// 数据库损坏，包含错误信息
+    Corrupted(String),
+}
+
+impl SessionDB {
+    /// 执行 WAL checkpoint，将 WAL 数据合并回主数据库
+    ///
+    /// 在优雅关闭时调用，确保数据持久化
+    pub fn checkpoint(&self) -> Result<()> {
+        let conn = self.conn.lock();
+        conn.execute_batch("PRAGMA wal_checkpoint(TRUNCATE);")?;
+        Ok(())
+    }
+
+    /// 检查数据库完整性
+    ///
+    /// 使用 quick_check 进行快速检查（只检查 B-tree 结构）
+    pub fn quick_check(&self) -> Result<IntegrityCheckResult> {
+        let conn = self.conn.lock();
+        let result: String = conn.query_row("PRAGMA quick_check;", [], |row| row.get(0))?;
+
+        if result == "ok" {
+            Ok(IntegrityCheckResult::Ok)
+        } else {
+            Ok(IntegrityCheckResult::Corrupted(result))
+        }
+    }
+
+    /// 检查数据库完整性（完整检查）
+    ///
+    /// 使用 integrity_check 进行全量检查（较慢，但更彻底）
+    pub fn integrity_check(&self) -> Result<IntegrityCheckResult> {
+        let conn = self.conn.lock();
+        let result: String = conn.query_row("PRAGMA integrity_check;", [], |row| row.get(0))?;
+
+        if result == "ok" {
+            Ok(IntegrityCheckResult::Ok)
+        } else {
+            Ok(IntegrityCheckResult::Corrupted(result))
+        }
+    }
+}
+
 impl Drop for SessionDB {
     fn drop(&mut self) {
         #[cfg(feature = "coordination")]
