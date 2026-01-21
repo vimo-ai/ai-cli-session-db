@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # ============================================================================
-# 更新所有依赖 claude-session-db 的下游项目
+# 更新所有依赖 ai-cli-session-db 的下游项目
 #
 # 使用方式: ./scripts/update_downstream.sh
 #
@@ -21,8 +21,8 @@ GREEN='\033[0;32m'
 BLUE='\033[0;34m'
 NC='\033[0m'
 
-log_info() { echo -e "${BLUE}[claude-session-db]${NC} $*"; }
-log_success() { echo -e "${GREEN}[claude-session-db]${NC} $*"; }
+log_info() { echo -e "${BLUE}[ai-cli-session-db]${NC} $*"; }
+log_success() { echo -e "${GREEN}[ai-cli-session-db]${NC} $*"; }
 
 # 获取当前 commit hash
 cd "$PROJECT_DIR"
@@ -46,14 +46,14 @@ else
     # 复制到 VlaudeKit
     VLAUDE_KIT="$ETERM_ROOT/english/Plugins/VlaudeKit/Libs/SharedDB"
     if [ -d "$VLAUDE_KIT" ] || mkdir -p "$VLAUDE_KIT"; then
-        cp target/release/libclaude_session_db.dylib "$VLAUDE_KIT/"
+        cp target/release/libai_cli_session_db.dylib "$VLAUDE_KIT/"
         log_info "Copied to VlaudeKit"
     fi
 
     # 复制到 MemexKit
     MEMEX_KIT="$ETERM_ROOT/english/Plugins/MemexKit/Libs/SharedDB"
     if [ -d "$MEMEX_KIT" ] || mkdir -p "$MEMEX_KIT"; then
-        cp target/release/libclaude_session_db.dylib "$MEMEX_KIT/"
+        cp target/release/libai_cli_session_db.dylib "$MEMEX_KIT/"
         log_info "Copied to MemexKit"
     fi
 
@@ -67,6 +67,6 @@ fi
 
 echo ""
 log_success "Downstream projects updated!"
-echo "  claude-session-db: $LATEST_HASH"
+echo "  ai-cli-session-db: $LATEST_HASH"
 echo ""
 echo "Next: Run plugin build.sh or rebuild ETerm to load new binaries"

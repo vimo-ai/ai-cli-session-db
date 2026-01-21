@@ -1,7 +1,7 @@
-# claude-session-db Release CI
+# ai-cli-session-db Release CI
 #
 # Triggered on tag push (v*)
-# Builds libclaude_session_db.dylib for macOS arm64
+# Builds libai_cli_session_db.dylib for macOS arm64
 # Uploads to GitHub Release with sha256 checksum
 
 name: Release
@@ -41,7 +41,7 @@ jobs:
       - name: Get dylib info
         id: dylib
         run: |
-          DYLIB_PATH="target/release/libclaude_session_db.dylib"
+          DYLIB_PATH="target/release/libai_cli_session_db.dylib"
 
           # Get size
           SIZE=$(stat -f%z "$DYLIB_PATH")
@@ -67,32 +67,32 @@ jobs:
       - name: Create checksum file
         run: |
           cd target/release
-          shasum -a 256 libclaude_session_db.dylib > libclaude_session_db.dylib.sha256
+          shasum -a 256 libai_cli_session_db.dylib > libai_cli_session_db.dylib.sha256
 
       - name: Sign dylib (ad-hoc)
         run: |
-          codesign -f -s - target/release/libclaude_session_db.dylib
+          codesign -f -s - target/release/libai_cli_session_db.dylib
 
       - name: Upload artifact (dry run)
         if: ${{ inputs.dry_run }}
         uses: actions/upload-artifact@v4
         with:
-          name: libclaude_session_db
+          name: libai_cli_session_db
           path: |
-            target/release/libclaude_session_db.dylib
-            target/release/libclaude_session_db.dylib.sha256
-            include/claude_session_db.h
+            target/release/libai_cli_session_db.dylib
+            target/release/libai_cli_session_db.dylib.sha256
+            include/ai_cli_session_db.h
 
       - name: Create Release
         if: ${{ !inputs.dry_run }}
         uses: softprops/action-gh-release@v2
         with:
           files: |
-            target/release/libclaude_session_db.dylib
-            target/release/libclaude_session_db.dylib.sha256
-            include/claude_session_db.h
+            target/release/libai_cli_session_db.dylib
+            target/release/libai_cli_session_db.dylib.sha256
+            include/ai_cli_session_db.h
           body: |
-            ## libclaude_session_db.dylib v${{ steps.dylib.outputs.version }}
+            ## libai_cli_session_db.dylib v${{ steps.dylib.outputs.version }}
 
             macOS arm64 动态库
 
@@ -100,8 +100,8 @@ jobs:
 
             ```bash
             mkdir -p ~/.vimo/lib
-            curl -L -o ~/.vimo/lib/libclaude_session_db.dylib \
-              https://github.com/${{ github.repository }}/releases/download/${{ github.ref_name }}/libclaude_session_db.dylib
+            curl -L -o ~/.vimo/lib/libai_cli_session_db.dylib \
+              https://github.com/${{ github.repository }}/releases/download/${{ github.ref_name }}/libai_cli_session_db.dylib
             ```
 
             ### 校验

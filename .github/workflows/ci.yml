@@ -1,0 +1,79 @@
+# ai-cli-session-db CI
+#
+# Triggered on PR to main and manual dispatch
+# Runs clippy, tests, and preview release build
+
+name: CI
+
+on:
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  check:
+    name: Check & Test
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+
+      - name: Clippy
+        run: cargo clippy --all-features -- -D warnings
+
+      - name: Test
+        run: cargo test --all-features
+
+  preview-release:
+    name: Preview Release Build
+    runs-on: macos-14
+    needs: check
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-apple-darwin
+
+      - name: Build release
+        run: cargo build --release --features ffi,fts,coordination
+
+      - name: Get dylib info
+        id: dylib
+        run: |
+          DYLIB_PATH="target/release/libai_cli_session_db.dylib"
+          SIZE=$(stat -f%z "$DYLIB_PATH")
+          SIZE_MB=$(echo "scale=2; $SIZE / 1048576" | bc)
+          SHA256=$(shasum -a 256 "$DYLIB_PATH" | cut -d' ' -f1)
+
+          echo "size_mb=$SIZE_MB" >> $GITHUB_OUTPUT
+          echo "sha256=$SHA256" >> $GITHUB_OUTPUT
+
+          echo "### Preview Build Summary" >> $GITHUB_STEP_SUMMARY
+          echo "- **Size**: ${SIZE_MB}MB" >> $GITHUB_STEP_SUMMARY
+          echo "- **SHA256**: \`$SHA256\`" >> $GITHUB_STEP_SUMMARY
+
+      - name: Create checksum file
+        run: |
+          cd target/release
+          shasum -a 256 libai_cli_session_db.dylib > libai_cli_session_db.dylib.sha256
+
+      - name: Sign dylib (ad-hoc)
+        run: codesign -f -s - target/release/libai_cli_session_db.dylib
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: libai_cli_session_db-preview
+          path: |
+            target/release/libai_cli_session_db.dylib
+            target/release/libai_cli_session_db.dylib.sha256
+            include/ai_cli_session_db.h

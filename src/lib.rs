@@ -1,4 +1,4 @@
-//! claude-session-db - 共享数据库库
+//! ai-cli-session-db - 共享数据库库
 //!
 //! 为 ETerm、Memex、Vlaude 提供统一的 Claude session 数据库访问层。
 //!
@@ -21,7 +21,7 @@
 //! # 使用示例
 //!
 //! ```ignore
-//! use claude_session_db::{SessionDB, DbConfig, WriterType};
+//! use ai_cli_session_db::{SessionDB, DbConfig, WriterType};
 //!
 //! // 连接数据库
 //! let config = DbConfig::local("~/.memex/session.db");

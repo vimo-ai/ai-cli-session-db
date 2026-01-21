@@ -1,7 +1,7 @@
 //! 集成测试
 
-use claude_session_db::db::MessageInput;
-use claude_session_db::*;
+use ai_cli_session_db::db::MessageInput;
+use ai_cli_session_db::*;
 use tempfile::TempDir;
 
 /// 创建临时数据库
@@ -771,7 +771,7 @@ mod stats_tests {
 #[cfg(feature = "coordination")]
 mod coordination_advanced_tests {
     use super::*;
-    use claude_session_db::{Role, WriterType};
+    use ai_cli_session_db::{Role, WriterType};
 
     #[test]
     fn test_heartbeat_update() {
@@ -829,7 +829,7 @@ mod coordination_advanced_tests {
 
         // 检查健康状态
         let health = db2.check_writer_health().unwrap();
-        assert_eq!(health, claude_session_db::WriterHealth::Released);
+        assert_eq!(health, ai_cli_session_db::WriterHealth::Released);
     }
 
     #[test]
@@ -878,7 +878,7 @@ mod coordination_advanced_tests {
         // 验证错误类型
         let err = write_result.unwrap_err();
         assert!(
-            matches!(err, claude_session_db::Error::PermissionDenied),
+            matches!(err, ai_cli_session_db::Error::PermissionDenied),
             "Expected PermissionDenied error, got {:?}",
             err
         );
@@ -976,7 +976,7 @@ mod coordination_advanced_tests {
         assert!(write_result.is_err());
         let err = write_result.unwrap_err();
         assert!(
-            matches!(err, claude_session_db::Error::PermissionDenied),
+            matches!(err, ai_cli_session_db::Error::PermissionDenied),
             "Expected PermissionDenied after demotion, got {:?}",
             err
         );
@@ -1015,7 +1015,7 @@ mod coordination_advanced_tests {
 
         // db2 检查 Writer 健康状态
         let health = db2.check_writer_health().unwrap();
-        assert_eq!(health, claude_session_db::WriterHealth::Released);
+        assert_eq!(health, ai_cli_session_db::WriterHealth::Released);
 
         // db2 尝试接管
         let taken = db2.try_takeover().unwrap();
@@ -1317,7 +1317,7 @@ mod edge_case_tests {
 #[cfg(feature = "writer")]
 mod writer_conversion_tests {
     use ai_cli_session_collector::{MessageType, ParsedContent, ParsedMessage, Source};
-    use claude_session_db::writer::{convert_message, convert_messages};
+    use ai_cli_session_db::writer::{convert_message, convert_messages};
 
     fn create_parsed_message(uuid: &str, msg_type: MessageType, content: &str) -> ParsedMessage {
         ParsedMessage {

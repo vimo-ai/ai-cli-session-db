@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # ============================================================================
-# claude-session-db 编译脚本
+# ai-cli-session-db 编译脚本
 #
 # 编译 FFI dylib 并部署到 Swift 插件目录
 #
@@ -11,7 +11,7 @@
 set -e
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-PROJECT_NAME="claude-session-db"
+PROJECT_NAME="ai-cli-session-db"
 
 # 尝试查找 ETerm 目录（支持独立编译和作为子模块）
 if [ -d "$SCRIPT_DIR/../ETerm/Plugins" ]; then
@@ -44,8 +44,8 @@ log_info "Building FFI dylib..."
 cd "$SCRIPT_DIR"
 cargo build --release --features ffi,fts,coordination --target-dir "$SCRIPT_DIR/target"
 
-DYLIB="$SCRIPT_DIR/target/release/libclaude_session_db.dylib"
-HEADER="$SCRIPT_DIR/include/claude_session_db.h"
+DYLIB="$SCRIPT_DIR/target/release/libai_cli_session_db.dylib"
+HEADER="$SCRIPT_DIR/include/ai_cli_session_db.h"
 
 if [ ! -f "$DYLIB" ]; then
     log_error "FFI dylib not found: $DYLIB"

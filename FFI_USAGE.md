@@ -11,13 +11,13 @@ This library provides a C FFI interface for Swift integration in MemexKit and Vl
 cargo build --release --features ffi,fts,coordination
 
 # Output:
-# - Dynamic library: target/release/libclaude_session_db.dylib (macOS)
-# - C header: include/claude_session_db.h
+# - Dynamic library: target/release/libai_cli_session_db.dylib (macOS)
+# - C header: include/ai_cli_session_db.h
 ```
 
 ## C Header
 
-The header is auto-generated using `cbindgen` during build. Location: `include/claude_session_db.h`
+The header is auto-generated using `cbindgen` during build. Location: `include/ai_cli_session_db.h`
 
 ## Swift Integration
 
@@ -26,7 +26,7 @@ The header is auto-generated using `cbindgen` during build. Location: `include/c
 Add to your bridging header:
 
 ```c
-#import "claude_session_db.h"
+#import "ai_cli_session_db.h"
 ```
 
 ### 2. Basic Usage
@@ -245,23 +245,23 @@ Default features: `writer`, `reader`, `search`, `coordination`
 cargo test --all-features
 
 # Check FFI
-cargo build --features ffi && ls -lh target/debug/libclaude_session_db.dylib
+cargo build --features ffi && ls -lh target/debug/libai_cli_session_db.dylib
 ```
 
 ## Integration with Xcode
 
 1. Add library to "Link Binary With Libraries":
-   - `libclaude_session_db.dylib`
+   - `libai_cli_session_db.dylib`
 
 2. Add to "Build Settings" -> "Library Search Paths":
-   - `$(PROJECT_DIR)/../claude-session-db/target/release`
+   - `$(PROJECT_DIR)/../ai-cli-session-db/target/release`
 
 3. Add to "Build Settings" -> "Header Search Paths":
-   - `$(PROJECT_DIR)/../claude-session-db/include`
+   - `$(PROJECT_DIR)/../ai-cli-session-db/include`
 
 4. Import in bridging header:
    ```objective-c
-   #import "claude_session_db.h"
+   #import "ai_cli_session_db.h"
    ```
 
 ## Notes

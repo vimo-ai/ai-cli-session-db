@@ -1,4 +1,4 @@
-# claude-session-db
+# ai-cli-session-db
 
 Shared database library for Claude session management with writer coordination.
 
@@ -27,7 +27,7 @@ ffi = []              # C FFI export (for Swift bindings)
 ## Usage
 
 ```rust
-use claude_session_db::{SessionDB, DbConfig, WriterType, Role};
+use ai_cli_session_db::{SessionDB, DbConfig, WriterType, Role};
 
 // Connect to database
 let config = DbConfig::local("~/.memex/session.db");

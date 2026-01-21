@@ -2,7 +2,7 @@ use std::env;
 
 fn main() {
     let crate_dir = env::var("CARGO_MANIFEST_DIR").unwrap();
-    let output_file = format!("{}/include/claude_session_db.h", crate_dir);
+    let output_file = format!("{}/include/ai_cli_session_db.h", crate_dir);
 
     // 生成 C header
     cbindgen::Builder::new()

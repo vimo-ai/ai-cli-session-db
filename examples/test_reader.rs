@@ -1,6 +1,6 @@
 //! 测试 SessionReader 功能
 
-use claude_session_db::reader::{compute_session_path, SessionReader};
+use ai_cli_session_db::reader::{compute_session_path, SessionReader};
 use std::path::PathBuf;
 
 fn main() {
