@@ -662,6 +662,10 @@ enum SessionDbError session_db_list_file_projects(const char *projects_path,
 
 /**
  * 释放项目列表
+ *
+ * # Safety
+ * - `array` 必须来自 `session_db_list_projects` 返回的数据
+ * - 同一指针只能释放一次
  */
 void session_db_free_project_list(struct ProjectInfoArray *array);
 
@@ -683,6 +687,10 @@ enum SessionDbError session_db_list_session_metas(const char *projects_path,
 
 /**
  * 释放会话列表
+ *
+ * # Safety
+ * - `array` 必须来自 `session_db_list_sessions` 返回的数据
+ * - 同一指针只能释放一次
  */
 void session_db_free_session_meta_list(struct SessionMetaArray *array);
 
@@ -708,6 +716,10 @@ enum SessionDbError session_db_find_latest_session(const char *projects_path,
 
 /**
  * 释放单个 SessionMeta
+ *
+ * # Safety
+ * - `session` 必须来自本库返回的 `SessionMetaC` 指针
+ * - 同一指针只能释放一次
  */
 void session_db_free_session_meta(struct SessionMetaC *session);
 
@@ -731,6 +743,10 @@ enum SessionDbError session_db_read_session_messages(const char *session_path,
 
 /**
  * 释放消息结果
+ *
+ * # Safety
+ * - `result` 必须来自 `session_db_read_messages` 返回的数据
+ * - 同一指针只能释放一次
  */
 void session_db_free_messages_result(struct MessagesResultC *result);
 
@@ -757,6 +773,10 @@ enum SessionDbError session_db_collect_by_path(struct SessionDbHandle *handle,
 
 /**
  * 释放采集结果
+ *
+ * # Safety
+ * - `result` 必须来自 `session_db_collect` 返回的数据
+ * - 同一指针只能释放一次
  */
 void session_db_free_collect_result(struct CollectResultC *result);
 

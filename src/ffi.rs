@@ -2041,6 +2041,10 @@ pub unsafe extern "C" fn session_db_list_file_projects(
 }
 
 /// 释放项目列表
+///
+/// # Safety
+/// - `array` 必须来自 `session_db_list_projects` 返回的数据
+/// - 同一指针只能释放一次
 #[no_mangle]
 pub unsafe extern "C" fn session_db_free_project_list(array: *mut ProjectInfoArray) {
     if array.is_null() {
@@ -2199,6 +2203,10 @@ pub unsafe extern "C" fn session_db_list_session_metas(
 }
 
 /// 释放会话列表
+///
+/// # Safety
+/// - `array` 必须来自 `session_db_list_sessions` 返回的数据
+/// - 同一指针只能释放一次
 #[no_mangle]
 pub unsafe extern "C" fn session_db_free_session_meta_list(array: *mut SessionMetaArray) {
     if array.is_null() {
@@ -2335,6 +2343,10 @@ pub unsafe extern "C" fn session_db_find_latest_session(
 }
 
 /// 释放单个 SessionMeta
+///
+/// # Safety
+/// - `session` 必须来自本库返回的 `SessionMetaC` 指针
+/// - 同一指针只能释放一次
 #[no_mangle]
 pub unsafe extern "C" fn session_db_free_session_meta(session: *mut SessionMetaC) {
     if session.is_null() {
@@ -2537,6 +2549,10 @@ pub unsafe extern "C" fn session_db_read_session_messages(
 }
 
 /// 释放消息结果
+///
+/// # Safety
+/// - `result` 必须来自 `session_db_read_messages` 返回的数据
+/// - 同一指针只能释放一次
 #[no_mangle]
 pub unsafe extern "C" fn session_db_free_messages_result(result: *mut MessagesResultC) {
     if result.is_null() {
@@ -2685,6 +2701,10 @@ pub unsafe extern "C" fn session_db_collect_by_path(
 }
 
 /// 释放采集结果
+///
+/// # Safety
+/// - `result` 必须来自 `session_db_collect` 返回的数据
+/// - 同一指针只能释放一次
 #[no_mangle]
 pub unsafe extern "C" fn session_db_free_collect_result(result: *mut CollectResultC) {
     if result.is_null() {
