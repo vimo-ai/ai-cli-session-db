@@ -853,6 +853,198 @@ mod coordination_advanced_tests {
         let heartbeat_result = db1.heartbeat();
         assert!(heartbeat_result.is_err());
     }
+
+    #[test]
+    fn test_reader_write_permission_denied() {
+        let tmp = TempDir::new().unwrap();
+        let db_path = tmp.path().join("shared.db");
+
+        // 第一个连接成为 Writer
+        let config1 = DbConfig::local(&db_path);
+        let mut db1 = SessionDB::connect(config1).unwrap();
+        let role1 = db1.register_writer(WriterType::MemexDaemon).unwrap();
+        assert_eq!(role1, Role::Writer);
+
+        // 第二个连接（同优先级）应该成为 Reader
+        let config2 = DbConfig::local(&db_path);
+        let mut db2 = SessionDB::connect(config2).unwrap();
+        let role2 = db2.register_writer(WriterType::VlaudeDaemon).unwrap();
+        assert_eq!(role2, Role::Reader);
+
+        // Reader 尝试写入应该返回 PermissionDenied 错误
+        let write_result = db2.get_or_create_project("test", "/path", "claude");
+        assert!(write_result.is_err());
+
+        // 验证错误类型
+        let err = write_result.unwrap_err();
+        assert!(
+            matches!(err, claude_session_db::Error::PermissionDenied),
+            "Expected PermissionDenied error, got {:?}",
+            err
+        );
+    }
+
+    #[test]
+    fn test_vlaude_kit_highest_priority() {
+        let tmp = TempDir::new().unwrap();
+        let db_path = tmp.path().join("shared.db");
+
+        // MemexKit (优先级 2) 先注册
+        let config1 = DbConfig::local(&db_path);
+        let mut db1 = SessionDB::connect(config1).unwrap();
+        let role1 = db1.register_writer(WriterType::MemexKit).unwrap();
+        assert_eq!(role1, Role::Writer);
+
+        // VlaudeKit (优先级 3，最高) 可以抢占
+        let config2 = DbConfig::local(&db_path);
+        let mut db2 = SessionDB::connect(config2).unwrap();
+        let role2 = db2.register_writer(WriterType::VlaudeKit).unwrap();
+        assert_eq!(role2, Role::Writer);
+
+        // db1 的心跳应该失败（被抢占了）
+        let heartbeat_result = db1.heartbeat();
+        assert!(heartbeat_result.is_err());
+    }
+
+    #[test]
+    fn test_writer_can_write() {
+        let tmp = TempDir::new().unwrap();
+        let db_path = tmp.path().join("shared.db");
+
+        // 注册为 Writer
+        let config = DbConfig::local(&db_path);
+        let mut db = SessionDB::connect(config).unwrap();
+        let role = db.register_writer(WriterType::MemexDaemon).unwrap();
+        assert_eq!(role, Role::Writer);
+
+        // Writer 可以写入
+        let project_id = db.get_or_create_project("test", "/path", "claude").unwrap();
+        assert!(project_id > 0);
+
+        db.upsert_session("session-001", project_id).unwrap();
+
+        let messages = vec![MessageInput {
+            uuid: "uuid-001".to_string(),
+            r#type: MessageType::User,
+            content_text: "Hello".to_string(),
+            content_full: "Hello".to_string(),
+            timestamp: 1000,
+            sequence: 1,
+            source: None,
+            channel: None,
+            model: None,
+            tool_call_id: None,
+            tool_name: None,
+            tool_args: None,
+            raw: None,
+            approval_status: None,
+            approval_resolved_at: None,
+        }];
+
+        let inserted = db.insert_messages("session-001", &messages).unwrap();
+        assert_eq!(inserted, 1);
+    }
+
+    /// 测试降级场景：Writer 被抢占后变成 Reader，写入应该被拒绝
+    #[test]
+    fn test_demotion_write_permission_denied() {
+        let tmp = TempDir::new().unwrap();
+        let db_path = tmp.path().join("shared.db");
+
+        // db1 作为 MemexDaemon (优先级 1) 先注册成为 Writer
+        let config1 = DbConfig::local(&db_path);
+        let mut db1 = SessionDB::connect(config1).unwrap();
+        let role1 = db1.register_writer(WriterType::MemexDaemon).unwrap();
+        assert_eq!(role1, Role::Writer);
+
+        // db1 作为 Writer 可以写入
+        let project_id = db1.get_or_create_project("test", "/path", "claude").unwrap();
+        assert!(project_id > 0);
+
+        // db2 作为 VlaudeKit (优先级 3，最高) 抢占
+        let config2 = DbConfig::local(&db_path);
+        let mut db2 = SessionDB::connect(config2).unwrap();
+        let role2 = db2.register_writer(WriterType::VlaudeKit).unwrap();
+        assert_eq!(role2, Role::Writer);
+
+        // db1 被降级，心跳失败
+        let heartbeat_result = db1.heartbeat();
+        assert!(heartbeat_result.is_err());
+
+        // 关键测试：db1 被降级后，写入应该返回 PermissionDenied
+        let write_result = db1.upsert_session("session-001", project_id);
+        assert!(write_result.is_err());
+        let err = write_result.unwrap_err();
+        assert!(
+            matches!(err, claude_session_db::Error::PermissionDenied),
+            "Expected PermissionDenied after demotion, got {:?}",
+            err
+        );
+
+        // db2 作为新 Writer 可以写入
+        db2.upsert_session("session-002", project_id).unwrap();
+    }
+
+    /// 测试升级场景：Reader 接管成为 Writer 后可以写入
+    #[test]
+    fn test_promotion_can_write() {
+        let tmp = TempDir::new().unwrap();
+        let db_path = tmp.path().join("shared.db");
+
+        // db1 先注册成为 Writer
+        let config1 = DbConfig::local(&db_path);
+        let mut db1 = SessionDB::connect(config1).unwrap();
+        let role1 = db1.register_writer(WriterType::MemexDaemon).unwrap();
+        assert_eq!(role1, Role::Writer);
+
+        // 创建项目供后续使用
+        let project_id = db1.get_or_create_project("test", "/path", "claude").unwrap();
+
+        // db2 作为同优先级注册，成为 Reader
+        let config2 = DbConfig::local(&db_path);
+        let mut db2 = SessionDB::connect(config2).unwrap();
+        let role2 = db2.register_writer(WriterType::VlaudeDaemon).unwrap();
+        assert_eq!(role2, Role::Reader);
+
+        // db2 作为 Reader 不能写入
+        let write_result = db2.upsert_session("session-001", project_id);
+        assert!(write_result.is_err());
+
+        // db1 释放 Writer 角色
+        db1.release_writer().unwrap();
+
+        // db2 检查 Writer 健康状态
+        let health = db2.check_writer_health().unwrap();
+        assert_eq!(health, claude_session_db::WriterHealth::Released);
+
+        // db2 尝试接管
+        let taken = db2.try_takeover().unwrap();
+        assert!(taken, "Takeover should succeed");
+
+        // 关键测试：db2 升级为 Writer 后可以写入
+        db2.upsert_session("session-001", project_id).unwrap();
+
+        let messages = vec![MessageInput {
+            uuid: "uuid-promoted".to_string(),
+            r#type: MessageType::User,
+            content_text: "After promotion".to_string(),
+            content_full: "After promotion".to_string(),
+            timestamp: 2000,
+            sequence: 1,
+            source: None,
+            channel: None,
+            model: None,
+            tool_call_id: None,
+            tool_name: None,
+            tool_args: None,
+            raw: None,
+            approval_status: None,
+            approval_resolved_at: None,
+        }];
+
+        let inserted = db2.insert_messages("session-001", &messages).unwrap();
+        assert_eq!(inserted, 1);
+    }
 }
 
 // ==================== 边界情况测试 ====================

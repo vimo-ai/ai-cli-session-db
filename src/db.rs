@@ -141,6 +141,42 @@ impl SessionDB {
         self.coordinator.as_ref().map(|c| c.watch_role())
     }
 
+    #[cfg(feature = "coordination")]
+    /// 获取当前角色
+    pub fn current_role(&self) -> Option<Role> {
+        self.coordinator.as_ref().map(|c| c.current_role())
+    }
+
+    #[cfg(feature = "coordination")]
+    /// 检查是否为 Writer
+    pub fn is_writer(&self) -> bool {
+        self.coordinator
+            .as_ref()
+            .map(|c| c.current_role() == Role::Writer)
+            .unwrap_or(false)
+    }
+
+    /// 非 coordination 模式下始终返回 true（允许写入）
+    #[cfg(not(feature = "coordination"))]
+    pub fn is_writer(&self) -> bool {
+        true
+    }
+
+    #[cfg(feature = "coordination")]
+    /// 检查是否为 Writer 角色，如果不是则返回 PermissionDenied 错误
+    ///
+    /// 所有写入方法应该在开始时调用此方法
+    fn require_writer(&self) -> Result<()> {
+        if let Some(ref coordinator) = self.coordinator {
+            let current_role = coordinator.current_role();
+            if current_role != Role::Writer {
+                return Err(Error::PermissionDenied);
+            }
+        }
+        // 如果没有启用协调机制（coordinator 为 None），则允许写入
+        Ok(())
+    }
+
     // ==================== Project 操作 ====================
 
     /// 获取或创建 Project
@@ -156,6 +192,9 @@ impl SessionDB {
         source: &str,
         encoded_dir_name: Option<&str>,
     ) -> Result<i64> {
+        #[cfg(feature = "coordination")]
+        self.require_writer()?;
+
         let conn = self.conn.lock();
 
         // 先查找
@@ -304,6 +343,9 @@ impl SessionDB {
 
     /// 创建或更新 Session (简化版，仅 session_id 和 project_id)
     pub fn upsert_session(&self, session_id: &str, project_id: i64) -> Result<()> {
+        #[cfg(feature = "coordination")]
+        self.require_writer()?;
+
         let conn = self.conn.lock();
         let now = current_time_ms();
 
@@ -322,6 +364,9 @@ impl SessionDB {
 
     /// 创建或更新 Session (完整版，支持所有元数据字段)
     pub fn upsert_session_full(&self, input: &SessionInput) -> Result<()> {
+        #[cfg(feature = "coordination")]
+        self.require_writer()?;
+
         let conn = self.conn.lock();
         let now = current_time_ms();
 
@@ -640,6 +685,9 @@ impl SessionDB {
 
     /// 更新 session 的最后消息时间
     pub fn update_session_last_message(&self, session_id: &str, timestamp: i64) -> Result<()> {
+        #[cfg(feature = "coordination")]
+        self.require_writer()?;
+
         let conn = self.conn.lock();
         let now = current_time_ms();
 
@@ -656,6 +704,9 @@ impl SessionDB {
     /// 批量写入 Messages (自动去重)
     /// 返回实际插入的数量
     pub fn insert_messages(&self, session_id: &str, messages: &[MessageInput]) -> Result<usize> {
+        #[cfg(feature = "coordination")]
+        self.require_writer()?;
+
         let mut conn = self.conn.lock();
         let tx = conn.transaction()?;
 
@@ -908,6 +959,9 @@ impl SessionDB {
 
     /// 标记消息已向量索引
     pub fn mark_messages_indexed(&self, message_ids: &[i64]) -> Result<usize> {
+        #[cfg(feature = "coordination")]
+        self.require_writer()?;
+
         if message_ids.is_empty() {
             return Ok(0);
         }
@@ -947,6 +1001,9 @@ impl SessionDB {
     /// 标记消息向量索引失败
     /// vector_indexed = -1 表示失败
     pub fn mark_message_index_failed(&self, message_id: i64) -> Result<()> {
+        #[cfg(feature = "coordination")]
+        self.require_writer()?;
+
         let conn = self.conn.lock();
         conn.execute(
             "UPDATE messages SET vector_indexed = -1 WHERE id = ?1",
@@ -957,6 +1014,9 @@ impl SessionDB {
 
     /// 批量标记消息向量索引失败
     pub fn mark_messages_index_failed(&self, message_ids: &[i64]) -> Result<usize> {
+        #[cfg(feature = "coordination")]
+        self.require_writer()?;
+
         if message_ids.is_empty() {
             return Ok(0);
         }
@@ -1042,6 +1102,9 @@ impl SessionDB {
 
     /// 重置失败的索引状态（将 -1 改为 0，可重新索引）
     pub fn reset_failed_indexed_messages(&self) -> Result<usize> {
+        #[cfg(feature = "coordination")]
+        self.require_writer()?;
+
         let conn = self.conn.lock();
         let count = conn.execute(
             "UPDATE messages SET vector_indexed = 0 WHERE vector_indexed = -1",
@@ -1166,6 +1229,9 @@ impl SessionDB {
         status: crate::types::ApprovalStatus,
         resolved_at: i64,
     ) -> Result<usize> {
+        #[cfg(feature = "coordination")]
+        self.require_writer()?;
+
         let conn = self.conn.lock();
         let count = conn.execute(
             r#"
@@ -1191,6 +1257,9 @@ impl SessionDB {
         status: crate::types::ApprovalStatus,
         resolved_at: i64,
     ) -> Result<usize> {
+        #[cfg(feature = "coordination")]
+        self.require_writer()?;
+
         let conn = self.conn.lock();
         let count = conn.execute(
             r#"
@@ -1213,6 +1282,9 @@ impl SessionDB {
         status: crate::types::ApprovalStatus,
         resolved_at: i64,
     ) -> Result<usize> {
+        #[cfg(feature = "coordination")]
+        self.require_writer()?;
+
         if uuids.is_empty() {
             return Ok(0);
         }
@@ -1302,6 +1374,9 @@ impl SessionDB {
         from_project_id: i64,
         to_project_id: i64,
     ) -> Result<usize> {
+        #[cfg(feature = "coordination")]
+        self.require_writer()?;
+
         let conn = self.conn.lock();
         let count = conn.execute(
             "UPDATE sessions SET project_id = ?1 WHERE project_id = ?2",
@@ -1312,6 +1387,9 @@ impl SessionDB {
 
     /// 删除项目
     pub fn delete_project(&self, project_id: i64) -> Result<()> {
+        #[cfg(feature = "coordination")]
+        self.require_writer()?;
+
         let conn = self.conn.lock();
         conn.execute("DELETE FROM projects WHERE id = ?1", params![project_id])?;
         Ok(())
@@ -1320,6 +1398,9 @@ impl SessionDB {
     /// 去重项目 - 按 path 合并，保留 session 最多的记录
     /// 返回 (合并数量, 删除的项目 ID 列表)
     pub fn deduplicate_projects(&self) -> Result<(usize, Vec<i64>)> {
+        #[cfg(feature = "coordination")]
+        self.require_writer()?;
+
         let conn = self.conn.lock();
 
         // 找出所有重复的 path（有多条记录）
@@ -1463,10 +1544,12 @@ pub enum IntegrityCheckResult {
 impl SessionDB {
     /// 执行 WAL checkpoint，将 WAL 数据合并回主数据库
     ///
-    /// 在优雅关闭时调用，确保数据持久化
+    /// 使用 PASSIVE 模式：不阻塞其他连接，不删除 WAL 文件。
+    /// 这确保多连接场景下（ETerm 插件 + memex daemon）WAL 文件 inode 保持不变，
+    /// 避免 TRUNCATE 删除 WAL 后其他连接 fd 失效导致的数据库损坏。
     pub fn checkpoint(&self) -> Result<()> {
         let conn = self.conn.lock();
-        conn.execute_batch("PRAGMA wal_checkpoint(TRUNCATE);")?;
+        conn.execute_batch("PRAGMA wal_checkpoint(PASSIVE);")?;
         Ok(())
     }
 

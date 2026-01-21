@@ -21,7 +21,7 @@ use rusqlite::params;
 /// - `:` (列指定符)
 ///
 /// 对每个词单独用双引号包裹，用 OR 连接，实现"匹配任一关键词"的搜索
-fn escape_fts5_query(query: &str) -> String {
+pub fn escape_fts5_query(query: &str) -> String {
     let terms: Vec<String> = query
         .split_whitespace()
         .map(|word| {

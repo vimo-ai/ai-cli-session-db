@@ -246,6 +246,20 @@ typedef struct MessagesResultC {
 } MessagesResultC;
 
 /**
+ * 采集结果（FFI 版本）
+ */
+typedef struct CollectResultC {
+    uintptr_t projects_scanned;
+    uintptr_t sessions_scanned;
+    uintptr_t messages_inserted;
+    uintptr_t error_count;
+    /**
+     * 第一个错误信息（如果有）
+     */
+    char *first_error;
+} CollectResultC;
+
+/**
  * 连接数据库
  *
  * # Safety
@@ -704,5 +718,31 @@ enum SessionDbError session_db_read_session_messages(const char *session_path,
  * 释放消息结果
  */
 void session_db_free_messages_result(struct MessagesResultC *result);
+
+/**
+ * 执行全量采集
+ *
+ * 扫描所有 CLI 会话文件（Claude、OpenCode、Codex 等），增量写入数据库。
+ *
+ * # Safety
+ * `handle` 必须是有效句柄，`out_result` 必须是有效指针
+ */
+enum SessionDbError session_db_collect(struct SessionDbHandle *handle,
+                                       struct CollectResultC **out_result);
+
+/**
+ * 按路径采集单个会话
+ *
+ * # Safety
+ * `handle` 必须是有效句柄，`path` 必须是有效 C 字符串
+ */
+enum SessionDbError session_db_collect_by_path(struct SessionDbHandle *handle,
+                                               const char *path,
+                                               struct CollectResultC **out_result);
+
+/**
+ * 释放采集结果
+ */
+void session_db_free_collect_result(struct CollectResultC *result);
 
 #endif  /* CLAUDE_SESSION_DB_H */

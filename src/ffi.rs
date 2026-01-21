@@ -29,6 +29,15 @@ pub enum SessionDbError {
     Unknown = 99,
 }
 
+/// 将 Rust Error 映射到 FFI SessionDbError
+fn map_error(e: crate::error::Error) -> SessionDbError {
+    match e {
+        crate::error::Error::PermissionDenied => SessionDbError::PermissionDenied,
+        crate::error::Error::Coordination(_) => SessionDbError::CoordinationError,
+        _ => SessionDbError::DatabaseError,
+    }
+}
+
 /// 不透明句柄
 pub struct SessionDbHandle {
     db: SessionDB,
@@ -280,7 +289,7 @@ pub unsafe extern "C" fn session_db_upsert_project(
             .get_or_create_project(name_str, path_str, source_str)
         {
             Ok(id) => Ok(id),
-            Err(_) => Err(SessionDbError::DatabaseError),
+            Err(e) => Err(map_error(e)),
         }
     }));
 
@@ -422,7 +431,7 @@ pub unsafe extern "C" fn session_db_upsert_session(
         };
         match handle.db.upsert_session(session_id_str, project_id) {
             Ok(_) => Ok(()),
-            Err(_) => Err(SessionDbError::DatabaseError),
+            Err(e) => Err(map_error(e)),
         }
     }));
 
@@ -591,7 +600,7 @@ pub unsafe extern "C" fn session_db_update_session_last_message(
             .update_session_last_message(session_id_str, timestamp)
         {
             Ok(_) => Ok(()),
-            Err(_) => Err(SessionDbError::DatabaseError),
+            Err(e) => Err(map_error(e)),
         }
     }));
 
@@ -678,7 +687,7 @@ pub unsafe extern "C" fn session_db_insert_messages(
 
         match handle.db.insert_messages(session_id_str, &rust_messages) {
             Ok(inserted) => Ok(inserted),
-            Err(_) => Err(SessionDbError::DatabaseError),
+            Err(e) => Err(map_error(e)),
         }
     }));
 
@@ -1355,7 +1364,7 @@ pub unsafe extern "C" fn session_db_update_approval_status_by_tool_call_id(
             resolved_at,
         ) {
             Ok(count) => Ok(count),
-            Err(_) => Err(SessionDbError::DatabaseError),
+            Err(e) => Err(map_error(e)),
         }
     }));
 
@@ -2483,5 +2492,139 @@ pub unsafe extern "C" fn session_db_free_messages_result(result: *mut MessagesRe
                 drop(CString::from_raw(m.timestamp));
             }
         }
+    }
+}
+
+// ==================== Collect API ====================
+
+/// 采集结果（FFI 版本）
+#[repr(C)]
+pub struct CollectResultC {
+    pub projects_scanned: usize,
+    pub sessions_scanned: usize,
+    pub messages_inserted: usize,
+    pub error_count: usize,
+    /// 第一个错误信息（如果有）
+    pub first_error: *mut c_char,
+}
+
+/// 执行全量采集
+///
+/// 扫描所有 CLI 会话文件（Claude、OpenCode、Codex 等），增量写入数据库。
+///
+/// # Safety
+/// `handle` 必须是有效句柄，`out_result` 必须是有效指针
+#[no_mangle]
+pub unsafe extern "C" fn session_db_collect(
+    handle: *mut SessionDbHandle,
+    out_result: *mut *mut CollectResultC,
+) -> SessionDbError {
+    if handle.is_null() || out_result.is_null() {
+        return SessionDbError::NullPointer;
+    }
+
+    let handle = &*handle;
+
+    // 检查是否为 Writer
+    if !handle.db.is_writer() {
+        return SessionDbError::PermissionDenied;
+    }
+
+    let result = panic::catch_unwind(AssertUnwindSafe(|| {
+        use crate::collector::Collector;
+
+        let collector = Collector::new(&handle.db);
+        collector.collect_all()
+    }));
+
+    match result {
+        Ok(Ok(collect_result)) => {
+            let first_error = if let Some(err) = collect_result.errors.first() {
+                CString::new(err.as_str()).map(|s| s.into_raw()).unwrap_or(std::ptr::null_mut())
+            } else {
+                std::ptr::null_mut()
+            };
+
+            let c_result = Box::new(CollectResultC {
+                projects_scanned: collect_result.projects_scanned,
+                sessions_scanned: collect_result.sessions_scanned,
+                messages_inserted: collect_result.messages_inserted,
+                error_count: collect_result.errors.len(),
+                first_error,
+            });
+            *out_result = Box::into_raw(c_result);
+            SessionDbError::Success
+        }
+        Ok(Err(_)) => SessionDbError::DatabaseError,
+        Err(_) => SessionDbError::Unknown,
+    }
+}
+
+/// 按路径采集单个会话
+///
+/// # Safety
+/// `handle` 必须是有效句柄，`path` 必须是有效 C 字符串
+#[no_mangle]
+pub unsafe extern "C" fn session_db_collect_by_path(
+    handle: *mut SessionDbHandle,
+    path: *const c_char,
+    out_result: *mut *mut CollectResultC,
+) -> SessionDbError {
+    if handle.is_null() || path.is_null() || out_result.is_null() {
+        return SessionDbError::NullPointer;
+    }
+
+    let handle = &*handle;
+
+    // 检查是否为 Writer
+    if !handle.db.is_writer() {
+        return SessionDbError::PermissionDenied;
+    }
+
+    let path_str = match CStr::from_ptr(path).to_str() {
+        Ok(s) => s,
+        Err(_) => return SessionDbError::InvalidUtf8,
+    };
+
+    let result = panic::catch_unwind(AssertUnwindSafe(|| {
+        use crate::collector::Collector;
+
+        let collector = Collector::new(&handle.db);
+        collector.collect_by_path(path_str)
+    }));
+
+    match result {
+        Ok(Ok(collect_result)) => {
+            let first_error = if let Some(err) = collect_result.errors.first() {
+                CString::new(err.as_str()).map(|s| s.into_raw()).unwrap_or(std::ptr::null_mut())
+            } else {
+                std::ptr::null_mut()
+            };
+
+            let c_result = Box::new(CollectResultC {
+                projects_scanned: collect_result.projects_scanned,
+                sessions_scanned: collect_result.sessions_scanned,
+                messages_inserted: collect_result.messages_inserted,
+                error_count: collect_result.errors.len(),
+                first_error,
+            });
+            *out_result = Box::into_raw(c_result);
+            SessionDbError::Success
+        }
+        Ok(Err(_)) => SessionDbError::DatabaseError,
+        Err(_) => SessionDbError::Unknown,
+    }
+}
+
+/// 释放采集结果
+#[no_mangle]
+pub unsafe extern "C" fn session_db_free_collect_result(result: *mut CollectResultC) {
+    if result.is_null() {
+        return;
+    }
+
+    let r = Box::from_raw(result);
+    if !r.first_error.is_null() {
+        drop(CString::from_raw(r.first_error));
     }
 }

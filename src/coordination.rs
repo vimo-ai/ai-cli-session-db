@@ -24,10 +24,16 @@ pub enum WriterType {
 
 impl WriterType {
     /// 获取优先级 (数字越大优先级越高)
+    ///
+    /// 优先级说明：
+    /// - Daemon (1): 后台服务，优先级最低
+    /// - MemexKit (2): ETerm 插件，事件驱动
+    /// - VlaudeKit (3): ETerm 插件，有 approval 实时写入需求，优先级最高
     pub fn priority(&self) -> i32 {
         match self {
             WriterType::MemexDaemon | WriterType::VlaudeDaemon => 1,
-            WriterType::MemexKit | WriterType::VlaudeKit => 2,
+            WriterType::MemexKit => 2,
+            WriterType::VlaudeKit => 3, // 最高优先级，有 approval 实时写入需求
         }
     }
 
@@ -121,6 +127,11 @@ impl Coordinator {
     /// 获取角色监听器
     pub fn watch_role(&self) -> watch::Receiver<Role> {
         self.role_rx.clone()
+    }
+
+    /// 获取当前角色
+    pub fn current_role(&self) -> Role {
+        *self.role_rx.borrow()
     }
 
     /// 尝试注册为 Writer (原子操作)

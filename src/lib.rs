@@ -56,8 +56,14 @@ pub mod coordination;
 #[cfg(feature = "writer")]
 pub mod writer;
 
+#[cfg(feature = "writer")]
+pub mod collector;
+
 #[cfg(feature = "search")]
 pub mod search;
+
+#[cfg(feature = "search")]
+pub use search::escape_fts5_query;
 
 #[cfg(feature = "ffi")]
 pub mod ffi;
@@ -73,6 +79,9 @@ pub use types::*;
 
 #[cfg(feature = "coordination")]
 pub use coordination::{Role, WriterHealth, WriterType};
+
+#[cfg(feature = "writer")]
+pub use collector::{CollectResult, Collector};
 
 // Re-export ai-cli-session-collector 类型（统一入口）
 // 下游项目应该从这里导入，避免直接依赖 ai-cli-session-collector
