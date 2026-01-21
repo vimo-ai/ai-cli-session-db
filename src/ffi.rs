@@ -217,6 +217,74 @@ pub unsafe extern "C" fn session_db_try_takeover(
     }
 }
 
+/// 注册为 Writer 并在成为 Writer 时自动触发全量采集
+///
+/// 此接口统一了"成为 Writer 时触发采集"的逻辑，供所有组件使用。
+///
+/// # Safety
+/// `handle` 必须是有效句柄
+/// `out_role` 输出角色: 0=Writer, 1=Reader
+/// `out_result` 如果不为 null，输出采集结果（仅当成为 Writer 时有值）
+#[cfg(feature = "coordination")]
+#[no_mangle]
+pub unsafe extern "C" fn session_db_register_writer_and_collect(
+    handle: *mut SessionDbHandle,
+    writer_type: i32,
+    out_role: *mut i32,
+    out_result: *mut *mut CollectResultC,
+) -> SessionDbError {
+    use crate::coordination::{Role, WriterType};
+
+    if handle.is_null() || out_role.is_null() {
+        return SessionDbError::NullPointer;
+    }
+
+    let handle = &mut *handle;
+    let writer_type = match writer_type {
+        0 => WriterType::MemexDaemon,
+        1 => WriterType::VlaudeDaemon,
+        2 => WriterType::MemexKit,
+        3 => WriterType::VlaudeKit,
+        _ => return SessionDbError::Unknown,
+    };
+
+    match handle.db.register_writer_and_collect(writer_type) {
+        Ok((role, collect_result)) => {
+            *out_role = match role {
+                Role::Writer => 0,
+                Role::Reader => 1,
+            };
+
+            // 如果提供了 out_result 指针且有采集结果，填充结果
+            if !out_result.is_null() {
+                if let Some(result) = collect_result {
+                    let first_error = if result.errors.is_empty() {
+                        std::ptr::null_mut()
+                    } else {
+                        CString::new(result.errors.join("; "))
+                            .map(|s| s.into_raw())
+                            .unwrap_or(std::ptr::null_mut())
+                    };
+
+                    let c_result = Box::new(CollectResultC {
+                        projects_scanned: result.projects_scanned,
+                        sessions_scanned: result.sessions_scanned,
+                        messages_inserted: result.messages_inserted,
+                        error_count: result.errors.len(),
+                        first_error,
+                    });
+                    *out_result = Box::into_raw(c_result);
+                } else {
+                    *out_result = std::ptr::null_mut();
+                }
+            }
+
+            SessionDbError::Success
+        }
+        Err(_) => SessionDbError::CoordinationError,
+    }
+}
+
 /// 获取统计信息
 ///
 /// # Safety

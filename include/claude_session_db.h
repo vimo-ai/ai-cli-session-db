@@ -51,6 +51,20 @@ typedef enum SessionDbError {
 typedef struct SessionDbHandle SessionDbHandle;
 
 /**
+ * 采集结果（FFI 版本）
+ */
+typedef struct CollectResultC {
+    uintptr_t projects_scanned;
+    uintptr_t sessions_scanned;
+    uintptr_t messages_inserted;
+    uintptr_t error_count;
+    /**
+     * 第一个错误信息（如果有）
+     */
+    char *first_error;
+} CollectResultC;
+
+/**
  * Project C 结构体
  */
 typedef struct Project {
@@ -246,20 +260,6 @@ typedef struct MessagesResultC {
 } MessagesResultC;
 
 /**
- * 采集结果（FFI 版本）
- */
-typedef struct CollectResultC {
-    uintptr_t projects_scanned;
-    uintptr_t sessions_scanned;
-    uintptr_t messages_inserted;
-    uintptr_t error_count;
-    /**
-     * 第一个错误信息（如果有）
-     */
-    char *first_error;
-} CollectResultC;
-
-/**
  * 连接数据库
  *
  * # Safety
@@ -319,6 +319,21 @@ enum SessionDbError session_db_check_writer_health(const struct SessionDbHandle 
  * `out_taken` 输出是否接管成功: 1=成功, 0=失败
  */
 enum SessionDbError session_db_try_takeover(struct SessionDbHandle *handle, int32_t *out_taken);
+
+/**
+ * 注册为 Writer 并在成为 Writer 时自动触发全量采集
+ *
+ * 此接口统一了"成为 Writer 时触发采集"的逻辑，供所有组件使用。
+ *
+ * # Safety
+ * `handle` 必须是有效句柄
+ * `out_role` 输出角色: 0=Writer, 1=Reader
+ * `out_result` 如果不为 null，输出采集结果（仅当成为 Writer 时有值）
+ */
+enum SessionDbError session_db_register_writer_and_collect(struct SessionDbHandle *handle,
+                                                           int32_t writer_type,
+                                                           int32_t *out_role,
+                                                           struct CollectResultC **out_result);
 
 /**
  * 获取统计信息

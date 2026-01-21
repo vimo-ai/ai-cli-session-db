@@ -1,5 +1,6 @@
 //! 数据库连接和操作
 
+use crate::collector::CollectResult;
 use crate::config::{ConnectionMode, DbConfig};
 use crate::error::{Error, Result};
 use crate::migrations;
@@ -93,6 +94,45 @@ impl SessionDB {
     }
 
     #[cfg(feature = "coordination")]
+    /// 注册为 Writer 并在成为 Writer 时自动触发全量采集
+    ///
+    /// 此方法统一了"成为 Writer 时触发采集"的逻辑，供所有组件使用：
+    /// - VlaudeKit、MemexKit（ETerm 插件）
+    /// - memex daemon、vlaude daemon
+    ///
+    /// # Returns
+    /// - `Role`: 注册后的角色（Writer 或 Reader）
+    /// - `Option<CollectResult>`: 如果成为 Writer，返回采集结果；否则为 None
+    pub fn register_writer_and_collect(
+        &mut self,
+        writer_type: WriterType,
+    ) -> Result<(Role, Option<CollectResult>)> {
+        let role = self.register_writer(writer_type)?;
+
+        if role == Role::Writer {
+            tracing::info!("成为 Writer，触发全量采集...");
+            let collector = crate::collector::Collector::new(self);
+            match collector.collect_all() {
+                Ok(result) => {
+                    tracing::info!(
+                        "采集完成: {} sessions, {} 条新消息",
+                        result.sessions_scanned,
+                        result.messages_inserted
+                    );
+                    Ok((role, Some(result)))
+                }
+                Err(e) => {
+                    tracing::warn!("采集失败（不影响 Writer 注册）: {}", e);
+                    // 采集失败不影响 Writer 注册，返回空的采集结果
+                    Ok((role, None))
+                }
+            }
+        } else {
+            Ok((role, None))
+        }
+    }
+
+    #[cfg(feature = "coordination")]
     /// 更新心跳 (Writer 定期调用)
     pub fn heartbeat(&self) -> Result<()> {
         let coordinator = self
@@ -133,6 +173,39 @@ impl SessionDB {
             .ok_or_else(|| Error::Coordination("未注册".into()))?;
         let conn = self.conn.lock();
         coordinator.try_takeover(&conn)
+    }
+
+    #[cfg(feature = "coordination")]
+    /// 尝试接管 Writer 并在成功时自动触发全量采集
+    ///
+    /// 此方法统一了"接管 Writer 时触发采集"的逻辑。
+    ///
+    /// # Returns
+    /// - `bool`: 是否成功接管
+    /// - `Option<CollectResult>`: 如果成功接管，返回采集结果；否则为 None
+    pub fn try_takeover_and_collect(&mut self) -> Result<(bool, Option<CollectResult>)> {
+        let taken = self.try_takeover()?;
+
+        if taken {
+            tracing::info!("接管 Writer 成功，触发全量采集...");
+            let collector = crate::collector::Collector::new(self);
+            match collector.collect_all() {
+                Ok(result) => {
+                    tracing::info!(
+                        "采集完成: {} sessions, {} 条新消息",
+                        result.sessions_scanned,
+                        result.messages_inserted
+                    );
+                    Ok((taken, Some(result)))
+                }
+                Err(e) => {
+                    tracing::warn!("采集失败（不影响接管）: {}", e);
+                    Ok((taken, None))
+                }
+            }
+        } else {
+            Ok((taken, None))
+        }
     }
 
     #[cfg(feature = "coordination")]
