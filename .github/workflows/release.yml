@@ -1,8 +1,10 @@
 # ai-cli-session-db Release CI
 #
 # Triggered on tag push (v*)
-# Builds libai_cli_session_db.dylib for macOS arm64
-# Uploads to GitHub Release with sha256 checksum
+# Builds for macOS arm64:
+#   - libai_cli_session_db.dylib (FFI library)
+#   - vimo-agent (Agent binary)
+# Uploads to GitHub Release with sha256 checksums
 
 name: Release
 
@@ -36,7 +38,11 @@ jobs:
 
       - name: Build release
         run: |
+          # Build FFI dylib
           cargo build --release --features ffi,fts,client
+
+          # Build vimo-agent binary
+          cargo build --release --bin vimo-agent --features agent
 
       - name: Get dylib info
         id: dylib
@@ -59,28 +65,53 @@ jobs:
           echo "sha256=$SHA256" >> $GITHUB_OUTPUT
           echo "version=$VERSION" >> $GITHUB_OUTPUT
 
-          echo "### Build Summary" >> $GITHUB_STEP_SUMMARY
+          echo "### dylib Build Summary" >> $GITHUB_STEP_SUMMARY
           echo "- **Version**: $VERSION" >> $GITHUB_STEP_SUMMARY
           echo "- **Size**: ${SIZE_MB}MB" >> $GITHUB_STEP_SUMMARY
           echo "- **SHA256**: \`$SHA256\`" >> $GITHUB_STEP_SUMMARY
 
-      - name: Create checksum file
+      - name: Get agent info
+        id: agent
+        run: |
+          AGENT_PATH="target/release/vimo-agent"
+
+          # Get size
+          SIZE=$(stat -f%z "$AGENT_PATH")
+          SIZE_MB=$(echo "scale=2; $SIZE / 1048576" | bc)
+
+          # Get sha256
+          SHA256=$(shasum -a 256 "$AGENT_PATH" | cut -d' ' -f1)
+
+          echo "path=$AGENT_PATH" >> $GITHUB_OUTPUT
+          echo "size=$SIZE" >> $GITHUB_OUTPUT
+          echo "size_mb=$SIZE_MB" >> $GITHUB_OUTPUT
+          echo "sha256=$SHA256" >> $GITHUB_OUTPUT
+
+          echo "### vimo-agent Build Summary" >> $GITHUB_STEP_SUMMARY
+          echo "- **Size**: ${SIZE_MB}MB" >> $GITHUB_STEP_SUMMARY
+          echo "- **SHA256**: \`$SHA256\`" >> $GITHUB_STEP_SUMMARY
+
+      - name: Create checksum files
         run: |
           cd target/release
           shasum -a 256 libai_cli_session_db.dylib > libai_cli_session_db.dylib.sha256
+          shasum -a 256 vimo-agent > vimo-agent.sha256
 
-      - name: Sign dylib (ad-hoc)
+      - name: Sign binaries (ad-hoc)
         run: |
           codesign -f -s - target/release/libai_cli_session_db.dylib
+          codesign -f -s - target/release/vimo-agent
 
       - name: Upload artifact (dry run)
         if: ${{ inputs.dry_run }}
         uses: actions/upload-artifact@v4
         with:
-          name: libai_cli_session_db
+          name: ai-cli-session-db-release
           path: |
             target/release/libai_cli_session_db.dylib
             target/release/libai_cli_session_db.dylib.sha256
+            target/release/vimo-agent
+            target/release/vimo-agent.sha256
             include/ai_cli_session_db.h
 
       - name: Create Release
@@ -90,13 +121,22 @@ jobs:
           files: |
             target/release/libai_cli_session_db.dylib
             target/release/libai_cli_session_db.dylib.sha256
+            target/release/vimo-agent
+            target/release/vimo-agent.sha256
             include/ai_cli_session_db.h
           body: |
-            ## libai_cli_session_db.dylib v${{ steps.dylib.outputs.version }}
+            ## ai-cli-session-db v${{ steps.dylib.outputs.version }}
 
-            macOS arm64 动态库
+            macOS arm64 发布包
 
-            ### 安装
+            ### 产物
+
+            | 文件 | 说明 | SHA256 |
+            |------|------|--------|
+            | `libai_cli_session_db.dylib` | FFI 动态库 | `${{ steps.dylib.outputs.sha256 }}` |
+            | `vimo-agent` | Agent 二进制 | `${{ steps.agent.outputs.sha256 }}` |
+
+            ### 安装 dylib
 
             ```bash
             mkdir -p ~/.vimo/lib
@@ -104,11 +144,13 @@ jobs:
               https://github.com/${{ github.repository }}/releases/download/${{ github.ref_name }}/libai_cli_session_db.dylib
             ```
 
-            ### 校验
+            ### 安装 vimo-agent
 
-            ```
-            SHA256: ${{ steps.dylib.outputs.sha256 }}
-            Size: ${{ steps.dylib.outputs.size_mb }}MB
+            ```bash
+            mkdir -p ~/.vimo/bin
+            curl -L -o ~/.vimo/bin/vimo-agent \
+              https://github.com/${{ github.repository }}/releases/download/${{ github.ref_name }}/vimo-agent
+            chmod +x ~/.vimo/bin/vimo-agent
             ```
           draft: false
           prerelease: ${{ contains(github.ref_name, 'beta') || contains(github.ref_name, 'alpha') }}
