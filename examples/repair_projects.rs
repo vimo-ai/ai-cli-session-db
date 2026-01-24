@@ -139,6 +139,9 @@ fn main() {
     if remaining == 0 {
         println!("\n✅ 所有数据已修复！");
     } else {
-        println!("\n⚠️ 仍有 {} 条数据无法自动修复（可能对应的 JSONL 已删除）", remaining);
+        println!(
+            "\n⚠️ 仍有 {} 条数据无法自动修复（可能对应的 JSONL 已删除）",
+            remaining
+        );
     }
 }

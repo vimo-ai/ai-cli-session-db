@@ -74,23 +74,20 @@ impl<'a> Collector<'a> {
                     .unwrap_or_else(|| extract_project_name(&meta.project_path));
                 let source_str = source.to_string();
 
-                let project_id =
-                    match self
-                        .db
-                        .get_or_create_project_with_encoded(
-                            project_name,
-                            &meta.project_path,
-                            &source_str,
-                            meta.encoded_dir_name.as_deref(),
-                        ) {
-                        Ok(id) => id,
-                        Err(e) => {
-                            result
-                                .errors
-                                .push(format!("Failed to create project: {}", e));
-                            continue;
-                        }
-                    };
+                let project_id = match self.db.get_or_create_project_with_encoded(
+                    project_name,
+                    &meta.project_path,
+                    &source_str,
+                    meta.encoded_dir_name.as_deref(),
+                ) {
+                    Ok(id) => id,
+                    Err(e) => {
+                        result
+                            .errors
+                            .push(format!("Failed to create project: {}", e));
+                        continue;
+                    }
+                };
 
                 // 获取数据库中该会话的最新消息时间戳（时间戳增量采集）
                 let latest_ts = self
@@ -234,13 +231,18 @@ impl<'a> Collector<'a> {
         let sessions = match adapter.list_sessions() {
             Ok(s) => s,
             Err(e) => {
-                result.errors.push(format!("Failed to list sessions: {}", e));
+                result
+                    .errors
+                    .push(format!("Failed to list sessions: {}", e));
                 return Ok(result);
             }
         };
 
         // 找到对应的会话元数据
-        let meta = match sessions.iter().find(|m| m.session_path.as_deref() == Some(path)) {
+        let meta = match sessions
+            .iter()
+            .find(|m| m.session_path.as_deref() == Some(path))
+        {
             Some(m) => m,
             None => {
                 tracing::debug!("Session meta not found for path: {}", path);
@@ -399,9 +401,7 @@ fn extract_encoded_dir_name(path: &str) -> Option<String> {
 
 /// 从路径提取项目名
 fn extract_project_name(path: &str) -> &str {
-    path.rsplit('/')
-        .find(|s| !s.is_empty())
-        .unwrap_or(path)
+    path.rsplit('/').find(|s| !s.is_empty()).unwrap_or(path)
 }
 
 #[cfg(test)]

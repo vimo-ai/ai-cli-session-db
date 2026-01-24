@@ -5,10 +5,10 @@ use crate::config::{ConnectionMode, DbConfig};
 use crate::error::{Error, Result};
 use crate::migrations;
 use crate::schema;
-use crate::types::{Message, Project, ProjectWithStats, Session, SessionWithProject, Stats};
+use crate::types::{Message, Project, ProjectWithStats, Session, SessionWithProject, Stats, TalkSummary};
 use ai_cli_session_collector::MessageType;
 use parking_lot::Mutex;
-use rusqlite::{params, Connection, OptionalExtension};
+use rusqlite::{Connection, OptionalExtension, params};
 use std::path::Path;
 use std::sync::Arc;
 
@@ -1032,10 +1032,17 @@ impl SessionDB {
 
     /// 标记消息已向量索引
     pub fn mark_messages_indexed(&self, message_ids: &[i64]) -> Result<usize> {
+        println!(
+            "🔍 [DEBUG] mark_messages_indexed called with {} message IDs: {:?}",
+            message_ids.len(),
+            message_ids
+        );
+
         #[cfg(feature = "coordination")]
         self.require_writer()?;
 
         if message_ids.is_empty() {
+            println!("🔍 [DEBUG] No message IDs provided, returning 0");
             return Ok(0);
         }
 
@@ -1057,6 +1064,10 @@ impl SessionDB {
             .collect();
 
         let count = stmt.execute(params.as_slice())?;
+        println!(
+            "🔍 [DEBUG] SQL executed successfully, updated {} rows",
+            count
+        );
         Ok(count)
     }
 
@@ -1234,6 +1245,70 @@ impl SessionDB {
                     .get::<_, Option<String>>(16)?
                     .and_then(|s| s.parse().ok()),
                 approval_resolved_at: row.get(17)?,
+            })
+        })?;
+
+        rows.collect::<std::result::Result<Vec<_>, _>>()
+            .map_err(Into::into)
+    }
+
+    // ==================== Talk 摘要操作 ====================
+
+    /// 插入或更新 Talk 摘要
+    ///
+    /// - session_id: 会话 ID
+    /// - talk_id: Talk 唯一标识
+    /// - summary_l2: L2 摘要（每个 Talk 的摘要）
+    /// - summary_l3: L3 摘要（Session 级别汇总，可选）
+    pub fn upsert_talk_summary(
+        &self,
+        session_id: &str,
+        talk_id: &str,
+        summary_l2: &str,
+        summary_l3: Option<&str>,
+    ) -> Result<()> {
+        #[cfg(feature = "coordination")]
+        self.require_writer()?;
+
+        let conn = self.conn.lock();
+        let now = current_time_ms();
+
+        conn.execute(
+            r#"
+            INSERT INTO talks (session_id, talk_id, summary_l2, summary_l3, created_at, updated_at)
+            VALUES (?1, ?2, ?3, ?4, ?5, ?5)
+            ON CONFLICT(session_id, talk_id) DO UPDATE SET
+                summary_l2 = excluded.summary_l2,
+                summary_l3 = COALESCE(excluded.summary_l3, talks.summary_l3),
+                updated_at = excluded.updated_at
+            "#,
+            params![session_id, talk_id, summary_l2, summary_l3, now],
+        )?;
+
+        Ok(())
+    }
+
+    /// 获取 Session 的所有 Talk 摘要
+    pub fn get_talk_summaries(&self, session_id: &str) -> Result<Vec<TalkSummary>> {
+        let conn = self.conn.lock();
+        let mut stmt = conn.prepare(
+            r#"
+            SELECT id, session_id, talk_id, summary_l2, summary_l3, created_at, updated_at
+            FROM talks
+            WHERE session_id = ?1
+            ORDER BY created_at ASC
+            "#,
+        )?;
+
+        let rows = stmt.query_map(params![session_id], |row| {
+            Ok(TalkSummary {
+                id: row.get(0)?,
+                session_id: row.get(1)?,
+                talk_id: row.get(2)?,
+                summary_l2: row.get(3)?,
+                summary_l3: row.get(4)?,
+                created_at: row.get(5)?,
+                updated_at: row.get(6)?,
             })
         })?;
 

@@ -185,3 +185,16 @@ pub struct SessionWithProject {
     pub created_at: i64,
     pub updated_at: i64,
 }
+
+/// Talk 摘要 (Compact 结果)
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TalkSummary {
+    pub id: i64,
+    pub session_id: String,
+    pub talk_id: String,
+    pub summary_l2: String,         // L2 摘要（每个 Talk 的摘要）
+    pub summary_l3: Option<String>, // L3 摘要（Session 级别汇总）
+    pub created_at: i64,
+    pub updated_at: i64,
+}

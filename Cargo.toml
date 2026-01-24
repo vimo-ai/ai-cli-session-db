@@ -1,6 +1,6 @@
 [package]
 name = "ai-cli-session-db"
-version = "0.1.0"
+version = "0.0.1-beta.1"
 edition = "2021"
 description = "Shared database library for Claude session management with writer coordination"
 license = "MIT"
@@ -15,8 +15,10 @@ writer = []           # 写入能力
 reader = []           # 只读能力
 search = ["fts"]      # 搜索能力
 fts = []              # FTS5 支持
-coordination = []     # Writer 协调逻辑
+coordination = []     # Writer 协调逻辑（旧，将废弃）
 ffi = []              # C FFI 导出 (Swift 绑定用)
+agent = ["writer", "search", "dep:notify", "dep:notify-debouncer-mini"]  # Agent 模式（唯一 Writer + 文件监听 + 事件推送）
+client = []           # Agent Client（供组件使用）
 
 [dependencies]
 # 数据库
@@ -27,7 +29,11 @@ rusqlite = { version = "0.32", features = ["bundled", "vtab"] }
 ai-cli-session-collector = { git = "https://github.com/vimo-ai/ai-cli-session-collector" }
 
 # 异步运行时
-tokio = { version = "1", features = ["sync", "time", "rt"] }
+tokio = { version = "1", features = ["sync", "time", "rt", "rt-multi-thread", "net", "io-util", "macros", "fs", "signal"] }
+
+# 文件监听（Agent 用）
+notify = { version = "7", optional = true }
+notify-debouncer-mini = { version = "0.5", optional = true }
 
 # 序列化
 serde = { version = "1", features = ["derive"] }
@@ -37,14 +43,21 @@ serde_json = "1"
 anyhow = "1"
 thiserror = "2"
 tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 uuid = { version = "1", features = ["v4"] }
 chrono = { version = "0.4", features = ["serde"] }
 dirs = "5"
 parking_lot = "0.12"
+libc = "0.2"
 
 [[bin]]
 name = "migrate_archive"
 path = "src/bin/migrate_archive.rs"
+
+[[bin]]
+name = "vimo-agent"
+path = "src/bin/vimo_agent.rs"
+required-features = ["agent"]
 
 [build-dependencies]
 cbindgen = "0.27"
@@ -52,4 +65,3 @@ cbindgen = "0.27"
 [dev-dependencies]
 tokio = { version = "1", features = ["full", "test-util"] }
 tempfile = "3"
-tracing-subscriber = { version = "0.3", features = ["env-filter"] }

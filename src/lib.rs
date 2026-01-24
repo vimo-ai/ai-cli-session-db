@@ -46,6 +46,7 @@ pub mod config;
 pub mod db;
 pub mod error;
 pub mod migrations;
+pub mod protocol;
 pub mod reader;
 pub mod schema;
 pub mod types;
@@ -68,6 +69,12 @@ pub use search::escape_fts5_query;
 #[cfg(feature = "ffi")]
 pub mod ffi;
 
+#[cfg(feature = "agent")]
+pub mod agent;
+
+#[cfg(feature = "client")]
+pub mod client;
+
 // Re-exports
 pub use config::DbConfig;
 pub use db::{IntegrityCheckResult, MessageInput, ProjectWithSource, SessionDB, SessionInput};
@@ -83,16 +90,37 @@ pub use coordination::{Role, WriterHealth, WriterType};
 #[cfg(feature = "writer")]
 pub use collector::{CollectResult, Collector};
 
+// Protocol types (always available)
+pub use protocol::{ApprovalStatus as AgentApprovalStatus, Event, EventType, Push, QueryType, Request, Response};
+
+#[cfg(feature = "agent")]
+pub use agent::{Agent, AgentConfig, cleanup_stale_agent, is_agent_running};
+
+#[cfg(feature = "client")]
+pub use client::{AgentClient, ClientConfig, connect_or_start_agent};
+
 // Re-export ai-cli-session-collector 类型（统一入口）
 // 下游项目应该从这里导入，避免直接依赖 ai-cli-session-collector
 pub use ai_cli_session_collector::{
-    // 核心类型
-    AdapterMeta, ConversationAdapter, WatchConfig,
     // 工厂函数（适配器自注册机制）
-    adapter_for_path, all_adapters, all_extensions, all_watch_configs,
+    adapter_for_path,
+    all_adapters,
+    all_extensions,
+    all_watch_configs,
+    // 核心类型
+    AdapterMeta,
     // 具体适配器
-    ClaudeAdapter, CodexAdapter, OpenCodeAdapter,
+    ClaudeAdapter,
+    CodexAdapter,
+    ConversationAdapter,
     // 领域类型
-    IndexableMessage, IndexableSession, MessageType, ParseResult, ParsedMessage, SessionMeta,
+    IndexableMessage,
+    IndexableSession,
+    MessageType,
+    OpenCodeAdapter,
+    ParseResult,
+    ParsedMessage,
+    SessionMeta,
     Source,
+    WatchConfig,
 };

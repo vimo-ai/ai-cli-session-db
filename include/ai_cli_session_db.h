@@ -12,6 +12,15 @@
 #include "stddef.h"
 
 /**
+ * 事件类型（FFI 友好）
+ */
+typedef enum AgentEventType {
+    NewMessage = 0,
+    SessionStart = 1,
+    SessionEnd = 2,
+} AgentEventType;
+
+/**
  * 审批状态 C 枚举
  * 0 = Pending, 1 = Approved, 2 = Rejected, 3 = Timeout
  */
@@ -21,6 +30,24 @@ typedef enum ApprovalStatusC {
     Rejected = 2,
     Timeout = 3,
 } ApprovalStatusC;
+
+/**
+ * FFI 统一错误码
+ */
+typedef enum FfiError {
+    Success = 0,
+    NullPointer = 1,
+    InvalidUtf8 = 2,
+    DatabaseError = 3,
+    CoordinationError = 4,
+    PermissionDenied = 5,
+    ConnectionFailed = 6,
+    NotConnected = 7,
+    RequestFailed = 8,
+    AgentNotFound = 9,
+    RuntimeError = 10,
+    Unknown = 99,
+} FfiError;
 
 /**
  * 搜索排序方式 C 枚举
@@ -33,17 +60,9 @@ typedef enum SearchOrderByC {
 } SearchOrderByC;
 
 /**
- * FFI 友好的错误码
+ * 不透明句柄
  */
-typedef enum SessionDbError {
-    Success = 0,
-    NullPointer = 1,
-    InvalidUtf8 = 2,
-    DatabaseError = 3,
-    CoordinationError = 4,
-    PermissionDenied = 5,
-    Unknown = 99,
-} SessionDbError;
+typedef struct AgentClientHandle AgentClientHandle;
 
 /**
  * 不透明句柄
@@ -195,7 +214,7 @@ typedef struct IndexableSessionC {
  */
 typedef struct ParseResult {
     struct IndexableSessionC *session;
-    enum SessionDbError error;
+    enum FfiError error;
 } ParseResult;
 
 /**
@@ -260,12 +279,23 @@ typedef struct MessagesResultC {
 } MessagesResultC;
 
 /**
+ * 推送回调函数类型
+ *
+ * - `event_type`: 事件类型
+ * - `data_json`: 事件数据（JSON 格式）
+ * - `user_data`: 用户数据指针
+ */
+typedef void (*AgentPushCallback)(enum AgentEventType event_type,
+                                  const char *data_json,
+                                  void *user_data);
+
+/**
  * 连接数据库
  *
  * # Safety
  * `path` 可以为 null（使用默认路径），或有效的 C 字符串
  */
-enum SessionDbError session_db_connect(const char *path, struct SessionDbHandle **out_handle);
+enum FfiError session_db_connect(const char *path, struct SessionDbHandle **out_handle);
 
 /**
  * 关闭数据库连接
@@ -281,9 +311,9 @@ void session_db_close(struct SessionDbHandle *handle);
  * # Safety
  * `handle` 必须是有效句柄
  */
-enum SessionDbError session_db_register_writer(struct SessionDbHandle *handle,
-                                               int32_t writer_type,
-                                               int32_t *out_role);
+enum FfiError session_db_register_writer(struct SessionDbHandle *handle,
+                                         int32_t writer_type,
+                                         int32_t *out_role);
 
 /**
  * 心跳
@@ -291,7 +321,7 @@ enum SessionDbError session_db_register_writer(struct SessionDbHandle *handle,
  * # Safety
  * `handle` 必须是有效句柄
  */
-enum SessionDbError session_db_heartbeat(struct SessionDbHandle *handle);
+enum FfiError session_db_heartbeat(struct SessionDbHandle *handle);
 
 /**
  * 释放 Writer
@@ -299,7 +329,7 @@ enum SessionDbError session_db_heartbeat(struct SessionDbHandle *handle);
  * # Safety
  * `handle` 必须是有效句柄
  */
-enum SessionDbError session_db_release_writer(struct SessionDbHandle *handle);
+enum FfiError session_db_release_writer(struct SessionDbHandle *handle);
 
 /**
  * 检查 Writer 健康状态
@@ -308,8 +338,8 @@ enum SessionDbError session_db_release_writer(struct SessionDbHandle *handle);
  * `handle` 必须是有效句柄
  * `out_health` 输出健康状态: 0=Alive, 1=Timeout, 2=Released
  */
-enum SessionDbError session_db_check_writer_health(const struct SessionDbHandle *handle,
-                                                   int32_t *out_health);
+enum FfiError session_db_check_writer_health(const struct SessionDbHandle *handle,
+                                             int32_t *out_health);
 
 /**
  * 尝试接管 Writer (Reader 在检测到超时后调用)
@@ -318,7 +348,7 @@ enum SessionDbError session_db_check_writer_health(const struct SessionDbHandle 
  * `handle` 必须是有效句柄
  * `out_taken` 输出是否接管成功: 1=成功, 0=失败
  */
-enum SessionDbError session_db_try_takeover(struct SessionDbHandle *handle, int32_t *out_taken);
+enum FfiError session_db_try_takeover(struct SessionDbHandle *handle, int32_t *out_taken);
 
 /**
  * 注册为 Writer 并在成为 Writer 时自动触发全量采集
@@ -330,10 +360,10 @@ enum SessionDbError session_db_try_takeover(struct SessionDbHandle *handle, int3
  * `out_role` 输出角色: 0=Writer, 1=Reader
  * `out_result` 如果不为 null，输出采集结果（仅当成为 Writer 时有值）
  */
-enum SessionDbError session_db_register_writer_and_collect(struct SessionDbHandle *handle,
-                                                           int32_t writer_type,
-                                                           int32_t *out_role,
-                                                           struct CollectResultC **out_result);
+enum FfiError session_db_register_writer_and_collect(struct SessionDbHandle *handle,
+                                                     int32_t writer_type,
+                                                     int32_t *out_role,
+                                                     struct CollectResultC **out_result);
 
 /**
  * 获取统计信息
@@ -341,10 +371,10 @@ enum SessionDbError session_db_register_writer_and_collect(struct SessionDbHandl
  * # Safety
  * `handle` 必须是有效句柄
  */
-enum SessionDbError session_db_get_stats(const struct SessionDbHandle *handle,
-                                         int64_t *out_projects,
-                                         int64_t *out_sessions,
-                                         int64_t *out_messages);
+enum FfiError session_db_get_stats(const struct SessionDbHandle *handle,
+                                   int64_t *out_projects,
+                                   int64_t *out_sessions,
+                                   int64_t *out_messages);
 
 /**
  * 获取或创建 Project
@@ -352,11 +382,11 @@ enum SessionDbError session_db_get_stats(const struct SessionDbHandle *handle,
  * # Safety
  * `handle`, `name`, `path`, `source` 必须是有效的 C 字符串
  */
-enum SessionDbError session_db_upsert_project(struct SessionDbHandle *handle,
-                                              const char *name,
-                                              const char *path,
-                                              const char *source,
-                                              int64_t *out_id);
+enum FfiError session_db_upsert_project(struct SessionDbHandle *handle,
+                                        const char *name,
+                                        const char *path,
+                                        const char *source,
+                                        int64_t *out_id);
 
 /**
  * 列出所有 Projects
@@ -364,8 +394,8 @@ enum SessionDbError session_db_upsert_project(struct SessionDbHandle *handle,
  * # Safety
  * `handle` 必须是有效句柄，返回的数组需要调用 `session_db_free_projects` 释放
  */
-enum SessionDbError session_db_list_projects(const struct SessionDbHandle *handle,
-                                             struct ProjectArray **out_array);
+enum FfiError session_db_list_projects(const struct SessionDbHandle *handle,
+                                       struct ProjectArray **out_array);
 
 /**
  * 释放 Projects 数组
@@ -381,9 +411,9 @@ void session_db_free_projects(struct ProjectArray *array);
  * # Safety
  * `handle`, `session_id` 必须是有效的 C 字符串
  */
-enum SessionDbError session_db_upsert_session(struct SessionDbHandle *handle,
-                                              const char *session_id,
-                                              int64_t project_id);
+enum FfiError session_db_upsert_session(struct SessionDbHandle *handle,
+                                        const char *session_id,
+                                        int64_t project_id);
 
 /**
  * 列出 Project 的 Sessions
@@ -391,9 +421,9 @@ enum SessionDbError session_db_upsert_session(struct SessionDbHandle *handle,
  * # Safety
  * `handle` 必须是有效句柄，返回的数组需要调用 `session_db_free_sessions` 释放
  */
-enum SessionDbError session_db_list_sessions(const struct SessionDbHandle *handle,
-                                             int64_t project_id,
-                                             struct SessionArray **out_array);
+enum FfiError session_db_list_sessions(const struct SessionDbHandle *handle,
+                                       int64_t project_id,
+                                       struct SessionArray **out_array);
 
 /**
  * 释放 Sessions 数组
@@ -409,9 +439,9 @@ void session_db_free_sessions(struct SessionArray *array);
  * # Safety
  * `handle`, `session_id` 必须是有效的 C 字符串
  */
-enum SessionDbError session_db_get_scan_checkpoint(const struct SessionDbHandle *handle,
-                                                   const char *session_id,
-                                                   int64_t *out_timestamp);
+enum FfiError session_db_get_scan_checkpoint(const struct SessionDbHandle *handle,
+                                             const char *session_id,
+                                             int64_t *out_timestamp);
 
 /**
  * 更新 session 的最后消息时间
@@ -419,9 +449,9 @@ enum SessionDbError session_db_get_scan_checkpoint(const struct SessionDbHandle 
  * # Safety
  * `handle`, `session_id` 必须是有效的 C 字符串
  */
-enum SessionDbError session_db_update_session_last_message(struct SessionDbHandle *handle,
-                                                           const char *session_id,
-                                                           int64_t timestamp);
+enum FfiError session_db_update_session_last_message(struct SessionDbHandle *handle,
+                                                     const char *session_id,
+                                                     int64_t timestamp);
 
 /**
  * 批量插入 Messages
@@ -429,11 +459,11 @@ enum SessionDbError session_db_update_session_last_message(struct SessionDbHandl
  * # Safety
  * `handle`, `session_id`, `messages` 必须是有效指针
  */
-enum SessionDbError session_db_insert_messages(struct SessionDbHandle *handle,
-                                               const char *session_id,
-                                               const struct MessageInputC *messages,
-                                               uintptr_t message_count,
-                                               uintptr_t *out_inserted);
+enum FfiError session_db_insert_messages(struct SessionDbHandle *handle,
+                                         const char *session_id,
+                                         const struct MessageInputC *messages,
+                                         uintptr_t message_count,
+                                         uintptr_t *out_inserted);
 
 /**
  * 列出 Session 的 Messages
@@ -441,11 +471,11 @@ enum SessionDbError session_db_insert_messages(struct SessionDbHandle *handle,
  * # Safety
  * `handle`, `session_id` 必须是有效指针，返回的数组需要调用 `session_db_free_messages` 释放
  */
-enum SessionDbError session_db_list_messages(const struct SessionDbHandle *handle,
-                                             const char *session_id,
-                                             uintptr_t limit,
-                                             uintptr_t offset,
-                                             struct MessageArray **out_array);
+enum FfiError session_db_list_messages(const struct SessionDbHandle *handle,
+                                       const char *session_id,
+                                       uintptr_t limit,
+                                       uintptr_t offset,
+                                       struct MessageArray **out_array);
 
 /**
  * 释放 Messages 数组
@@ -461,10 +491,10 @@ void session_db_free_messages(struct MessageArray *array);
  * # Safety
  * `handle`, `query` 必须是有效指针，返回的数组需要调用 `session_db_free_search_results` 释放
  */
-enum SessionDbError session_db_search_fts(const struct SessionDbHandle *handle,
-                                          const char *query,
-                                          uintptr_t limit,
-                                          struct SearchResultArray **out_array);
+enum FfiError session_db_search_fts(const struct SessionDbHandle *handle,
+                                    const char *query,
+                                    uintptr_t limit,
+                                    struct SearchResultArray **out_array);
 
 /**
  * FTS5 全文搜索 (限定 Project)
@@ -472,11 +502,11 @@ enum SessionDbError session_db_search_fts(const struct SessionDbHandle *handle,
  * # Safety
  * `handle`, `query` 必须是有效指针，返回的数组需要调用 `session_db_free_search_results` 释放
  */
-enum SessionDbError session_db_search_fts_with_project(const struct SessionDbHandle *handle,
-                                                       const char *query,
-                                                       uintptr_t limit,
-                                                       int64_t project_id,
-                                                       struct SearchResultArray **out_array);
+enum FfiError session_db_search_fts_with_project(const struct SessionDbHandle *handle,
+                                                 const char *query,
+                                                 uintptr_t limit,
+                                                 int64_t project_id,
+                                                 struct SearchResultArray **out_array);
 
 /**
  * 释放 SearchResults 数组
@@ -502,14 +532,14 @@ void session_db_free_search_results(struct SearchResultArray *array);
  * # Safety
  * `handle`, `query` 必须是有效指针，返回的数组需要调用 `session_db_free_search_results` 释放
  */
-enum SessionDbError session_db_search_fts_full(const struct SessionDbHandle *handle,
-                                               const char *query,
-                                               uintptr_t limit,
-                                               int64_t project_id,
-                                               enum SearchOrderByC order_by,
-                                               int64_t start_timestamp,
-                                               int64_t end_timestamp,
-                                               struct SearchResultArray **out_array);
+enum FfiError session_db_search_fts_full(const struct SessionDbHandle *handle,
+                                         const char *query,
+                                         uintptr_t limit,
+                                         int64_t project_id,
+                                         enum SearchOrderByC order_by,
+                                         int64_t start_timestamp,
+                                         int64_t end_timestamp,
+                                         struct SearchResultArray **out_array);
 
 /**
  * FTS 全文搜索（完整参数版本，支持项目过滤和排序）
@@ -525,12 +555,12 @@ enum SessionDbError session_db_search_fts_full(const struct SessionDbHandle *han
  * # Safety
  * `handle`, `query` 必须是有效指针，返回的数组需要调用 `session_db_free_search_results` 释放
  */
-enum SessionDbError session_db_search_fts_with_options(const struct SessionDbHandle *handle,
-                                                       const char *query,
-                                                       uintptr_t limit,
-                                                       int64_t project_id,
-                                                       enum SearchOrderByC order_by,
-                                                       struct SearchResultArray **out_array);
+enum FfiError session_db_search_fts_with_options(const struct SessionDbHandle *handle,
+                                                 const char *query,
+                                                 uintptr_t limit,
+                                                 int64_t project_id,
+                                                 enum SearchOrderByC order_by,
+                                                 struct SearchResultArray **out_array);
 
 /**
  * 通过 tool_call_id 更新审批状态
@@ -546,11 +576,11 @@ enum SessionDbError session_db_search_fts_with_options(const struct SessionDbHan
  * - `handle` 必须是有效句柄
  * - `tool_call_id` 必须是有效的 UTF-8 C 字符串
  */
-enum SessionDbError session_db_update_approval_status_by_tool_call_id(struct SessionDbHandle *handle,
-                                                                      const char *tool_call_id,
-                                                                      enum ApprovalStatusC status,
-                                                                      int64_t resolved_at,
-                                                                      uintptr_t *out_updated);
+enum FfiError session_db_update_approval_status_by_tool_call_id(struct SessionDbHandle *handle,
+                                                                const char *tool_call_id,
+                                                                enum ApprovalStatusC status,
+                                                                int64_t resolved_at,
+                                                                uintptr_t *out_updated);
 
 /**
  * 释放 C 字符串
@@ -656,9 +686,9 @@ char *session_db_compute_session_path(const char *projects_path,
  * # Safety
  * - 返回的数组需要调用 `session_db_free_project_list` 释放
  */
-enum SessionDbError session_db_list_file_projects(const char *projects_path,
-                                                  uint32_t limit,
-                                                  struct ProjectInfoArray **out_array);
+enum FfiError session_db_list_file_projects(const char *projects_path,
+                                            uint32_t limit,
+                                            struct ProjectInfoArray **out_array);
 
 /**
  * 释放项目列表
@@ -681,9 +711,9 @@ void session_db_free_project_list(struct ProjectInfoArray *array);
  * # Safety
  * - 返回的数组需要调用 `session_db_free_session_meta_list` 释放
  */
-enum SessionDbError session_db_list_session_metas(const char *projects_path,
-                                                  const char *project_path,
-                                                  struct SessionMetaArray **out_array);
+enum FfiError session_db_list_session_metas(const char *projects_path,
+                                            const char *project_path,
+                                            struct SessionMetaArray **out_array);
 
 /**
  * 释放会话列表
@@ -709,10 +739,10 @@ void session_db_free_session_meta_list(struct SessionMetaArray *array);
  * # Safety
  * - 返回的指针需要调用 `session_db_free_session_meta` 释放
  */
-enum SessionDbError session_db_find_latest_session(const char *projects_path,
-                                                   const char *project_path,
-                                                   uint64_t within_seconds,
-                                                   struct SessionMetaC **out_session);
+enum FfiError session_db_find_latest_session(const char *projects_path,
+                                             const char *project_path,
+                                             uint64_t within_seconds,
+                                             struct SessionMetaC **out_session);
 
 /**
  * 释放单个 SessionMeta
@@ -735,11 +765,11 @@ void session_db_free_session_meta(struct SessionMetaC *session);
  * # Safety
  * - 返回的结果需要调用 `session_db_free_messages_result` 释放
  */
-enum SessionDbError session_db_read_session_messages(const char *session_path,
-                                                     uintptr_t limit,
-                                                     uintptr_t offset,
-                                                     bool order_asc,
-                                                     struct MessagesResultC **out_result);
+enum FfiError session_db_read_session_messages(const char *session_path,
+                                               uintptr_t limit,
+                                               uintptr_t offset,
+                                               bool order_asc,
+                                               struct MessagesResultC **out_result);
 
 /**
  * 释放消息结果
@@ -758,8 +788,8 @@ void session_db_free_messages_result(struct MessagesResultC *result);
  * # Safety
  * `handle` 必须是有效句柄，`out_result` 必须是有效指针
  */
-enum SessionDbError session_db_collect(struct SessionDbHandle *handle,
-                                       struct CollectResultC **out_result);
+enum FfiError session_db_collect(struct SessionDbHandle *handle,
+                                 struct CollectResultC **out_result);
 
 /**
  * 按路径采集单个会话
@@ -767,9 +797,9 @@ enum SessionDbError session_db_collect(struct SessionDbHandle *handle,
  * # Safety
  * `handle` 必须是有效句柄，`path` 必须是有效 C 字符串
  */
-enum SessionDbError session_db_collect_by_path(struct SessionDbHandle *handle,
-                                               const char *path,
-                                               struct CollectResultC **out_result);
+enum FfiError session_db_collect_by_path(struct SessionDbHandle *handle,
+                                         const char *path,
+                                         struct CollectResultC **out_result);
 
 /**
  * 释放采集结果
@@ -779,5 +809,90 @@ enum SessionDbError session_db_collect_by_path(struct SessionDbHandle *handle,
  * - 同一指针只能释放一次
  */
 void session_db_free_collect_result(struct CollectResultC *result);
+
+/**
+ * 创建 AgentClient 句柄
+ *
+ * # Safety
+ * - `component` 必须是有效的 UTF-8 C 字符串
+ * - `data_dir` 可为 null（使用默认 ~/.vimo）
+ * - `out_handle` 不能为 null
+ */
+enum FfiError agent_client_create(const char *component,
+                                  const char *data_dir,
+                                  struct AgentClientHandle **out_handle);
+
+/**
+ * 销毁 AgentClient 句柄
+ *
+ * # Safety
+ * - `handle` 必须是 `agent_client_create` 返回的有效句柄
+ */
+void agent_client_destroy(struct AgentClientHandle *handle);
+
+/**
+ * 连接到 Agent
+ *
+ * 如果 Agent 未运行，会自动启动
+ *
+ * # Safety
+ * - `handle` 必须是有效句柄
+ */
+enum FfiError agent_client_connect(struct AgentClientHandle *handle);
+
+/**
+ * 订阅事件
+ *
+ * # Safety
+ * - `handle` 必须是有效句柄
+ * - `events` 和 `events_count` 必须有效
+ */
+enum FfiError agent_client_subscribe(struct AgentClientHandle *handle,
+                                     const enum AgentEventType *events,
+                                     uintptr_t events_count);
+
+/**
+ * 通知文件变化
+ *
+ * # Safety
+ * - `handle` 必须是有效句柄
+ * - `path` 必须是有效的 UTF-8 C 字符串
+ */
+enum FfiError agent_client_notify_file_change(struct AgentClientHandle *handle, const char *path);
+
+/**
+ * 设置推送回调
+ *
+ * # Safety
+ * - `handle` 必须是有效句柄
+ * - `callback` 和 `user_data` 在 handle 生命周期内必须有效
+ */
+void agent_client_set_push_callback(struct AgentClientHandle *handle,
+                                    AgentPushCallback callback,
+                                    void *user_data);
+
+/**
+ * 检查是否已连接
+ *
+ * # Safety
+ * - `handle` 必须是有效句柄
+ */
+bool agent_client_is_connected(const struct AgentClientHandle *handle);
+
+/**
+ * 断开连接
+ *
+ * # Safety
+ * - `handle` 必须是有效句柄
+ */
+void agent_client_disconnect(struct AgentClientHandle *handle);
+
+/**
+ * 获取版本号
+ *
+ * # Safety
+ * 返回静态字符串，无需释放
+ */
+const char *agent_client_version(void);
 
 #endif  /* CLAUDE_SESSION_DB_H */

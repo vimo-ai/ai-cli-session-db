@@ -958,7 +958,9 @@ mod coordination_advanced_tests {
         assert_eq!(role1, Role::Writer);
 
         // db1 作为 Writer 可以写入
-        let project_id = db1.get_or_create_project("test", "/path", "claude").unwrap();
+        let project_id = db1
+            .get_or_create_project("test", "/path", "claude")
+            .unwrap();
         assert!(project_id > 0);
 
         // db2 作为 VlaudeKit (优先级 3，最高) 抢占
@@ -998,7 +1000,9 @@ mod coordination_advanced_tests {
         assert_eq!(role1, Role::Writer);
 
         // 创建项目供后续使用
-        let project_id = db1.get_or_create_project("test", "/path", "claude").unwrap();
+        let project_id = db1
+            .get_or_create_project("test", "/path", "claude")
+            .unwrap();
 
         // db2 作为同优先级注册，成为 Reader
         let config2 = DbConfig::local(&db_path);
@@ -1403,5 +1407,364 @@ mod writer_conversion_tests {
 
         let input = convert_message(&parsed, 0);
         assert_eq!(input.timestamp, 0); // 解析失败默认为 0
+    }
+}
+
+// ==================== Agent + Client 集成测试 ====================
+
+#[cfg(all(feature = "agent", feature = "client"))]
+mod agent_client_tests {
+    use ai_cli_session_db::agent::{Agent, AgentConfig};
+    use ai_cli_session_db::protocol::{EventType, QueryType, Request, Response};
+    use std::sync::Arc;
+    use std::time::Duration;
+    use tempfile::TempDir;
+    use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+    use tokio::net::UnixStream;
+    use tokio::time::sleep;
+
+    /// 创建测试配置
+    fn test_agent_config() -> (AgentConfig, TempDir) {
+        let temp_dir = TempDir::new().unwrap();
+        let config = AgentConfig {
+            data_dir: temp_dir.path().to_path_buf(),
+            idle_timeout_secs: 60,
+        };
+        (config, temp_dir)
+    }
+
+    #[tokio::test]
+    async fn test_agent_client_full_handshake() {
+        let (agent_config, _tmp) = test_agent_config();
+        let socket_path = agent_config.socket_path();
+
+        // 启动 Agent
+        let agent = Arc::new(Agent::new(agent_config).unwrap());
+        let agent_handle = {
+            let agent = agent.clone();
+            tokio::spawn(async move {
+                let _ = agent.run().await;
+            })
+        };
+
+        sleep(Duration::from_millis(500)).await;
+
+        // 连接并握手
+        let stream = UnixStream::connect(&socket_path).await.unwrap();
+        let (reader, mut writer) = stream.into_split();
+        let mut reader = BufReader::new(reader);
+
+        let handshake = Request::Handshake {
+            component: "integration-test".to_string(),
+            version: "1.0.0".to_string(),
+        };
+        writer
+            .write_all(format!("{}\n", serde_json::to_string(&handshake).unwrap()).as_bytes())
+            .await
+            .unwrap();
+
+        let mut line = String::new();
+        reader.read_line(&mut line).await.unwrap();
+        let response: Response = serde_json::from_str(&line).unwrap();
+
+        match response {
+            Response::HandshakeOk { agent_version } => {
+                assert!(!agent_version.is_empty());
+            }
+            _ => panic!("Expected HandshakeOk"),
+        }
+
+        agent_handle.abort();
+    }
+
+    #[tokio::test]
+    async fn test_agent_client_subscribe_and_heartbeat() {
+        let (agent_config, _tmp) = test_agent_config();
+        let socket_path = agent_config.socket_path();
+
+        let agent = Arc::new(Agent::new(agent_config).unwrap());
+        let agent_handle = {
+            let agent = agent.clone();
+            tokio::spawn(async move {
+                let _ = agent.run().await;
+            })
+        };
+
+        sleep(Duration::from_millis(500)).await;
+
+        let stream = UnixStream::connect(&socket_path).await.unwrap();
+        let (reader, mut writer) = stream.into_split();
+        let mut reader = BufReader::new(reader);
+
+        // 握手
+        let handshake = Request::Handshake {
+            component: "test".to_string(),
+            version: "1.0.0".to_string(),
+        };
+        writer
+            .write_all(format!("{}\n", serde_json::to_string(&handshake).unwrap()).as_bytes())
+            .await
+            .unwrap();
+
+        let mut line = String::new();
+        reader.read_line(&mut line).await.unwrap();
+
+        // 订阅
+        line.clear();
+        let subscribe = Request::Subscribe {
+            events: vec![EventType::NewMessage, EventType::SessionStart],
+        };
+        writer
+            .write_all(format!("{}\n", serde_json::to_string(&subscribe).unwrap()).as_bytes())
+            .await
+            .unwrap();
+
+        reader.read_line(&mut line).await.unwrap();
+        let response: Response = serde_json::from_str(&line).unwrap();
+        assert!(matches!(response, Response::Ok));
+
+        // 心跳
+        line.clear();
+        let heartbeat = Request::Heartbeat;
+        writer
+            .write_all(format!("{}\n", serde_json::to_string(&heartbeat).unwrap()).as_bytes())
+            .await
+            .unwrap();
+
+        reader.read_line(&mut line).await.unwrap();
+        let response: Response = serde_json::from_str(&line).unwrap();
+        assert!(matches!(response, Response::Ok));
+
+        agent_handle.abort();
+    }
+
+    #[tokio::test]
+    async fn test_agent_client_query_status() {
+        let (agent_config, _tmp) = test_agent_config();
+        let socket_path = agent_config.socket_path();
+
+        let agent = Arc::new(Agent::new(agent_config).unwrap());
+        let agent_handle = {
+            let agent = agent.clone();
+            tokio::spawn(async move {
+                let _ = agent.run().await;
+            })
+        };
+
+        sleep(Duration::from_millis(500)).await;
+
+        let stream = UnixStream::connect(&socket_path).await.unwrap();
+        let (reader, mut writer) = stream.into_split();
+        let mut reader = BufReader::new(reader);
+
+        // 握手
+        let handshake = Request::Handshake {
+            component: "test".to_string(),
+            version: "1.0.0".to_string(),
+        };
+        writer
+            .write_all(format!("{}\n", serde_json::to_string(&handshake).unwrap()).as_bytes())
+            .await
+            .unwrap();
+
+        let mut line = String::new();
+        reader.read_line(&mut line).await.unwrap();
+
+        // 查询状态
+        line.clear();
+        let query = Request::Query {
+            query_type: QueryType::Status,
+        };
+        writer
+            .write_all(format!("{}\n", serde_json::to_string(&query).unwrap()).as_bytes())
+            .await
+            .unwrap();
+
+        reader.read_line(&mut line).await.unwrap();
+        let response: Response = serde_json::from_str(&line).unwrap();
+
+        match response {
+            Response::QueryResult { data } => {
+                assert!(data.get("agent_version").is_some());
+                assert!(data.get("connections").is_some());
+            }
+            _ => panic!("Expected QueryResult"),
+        }
+
+        agent_handle.abort();
+    }
+
+    #[tokio::test]
+    async fn test_multiple_clients_concurrent() {
+        let (agent_config, _tmp) = test_agent_config();
+        let socket_path = agent_config.socket_path();
+
+        let agent = Arc::new(Agent::new(agent_config).unwrap());
+        let agent_handle = {
+            let agent = agent.clone();
+            tokio::spawn(async move {
+                let _ = agent.run().await;
+            })
+        };
+
+        sleep(Duration::from_millis(500)).await;
+
+        // 创建多个并发客户端
+        let mut handles = vec![];
+
+        for i in 0..3 {
+            let socket_path = socket_path.clone();
+            let handle = tokio::spawn(async move {
+                let stream = UnixStream::connect(&socket_path).await.unwrap();
+                let (reader, mut writer) = stream.into_split();
+                let mut reader = BufReader::new(reader);
+
+                // 握手
+                let handshake = Request::Handshake {
+                    component: format!("client-{}", i),
+                    version: "1.0.0".to_string(),
+                };
+                writer
+                    .write_all(format!("{}\n", serde_json::to_string(&handshake).unwrap()).as_bytes())
+                    .await
+                    .unwrap();
+
+                let mut line = String::new();
+                reader.read_line(&mut line).await.unwrap();
+
+                let response: Response = serde_json::from_str(&line).unwrap();
+                assert!(matches!(response, Response::HandshakeOk { .. }));
+
+                sleep(Duration::from_millis(100)).await;
+                i
+            });
+            handles.push(handle);
+        }
+
+        // 等待所有客户端
+        for handle in handles {
+            let client_id = handle.await.unwrap();
+            assert!(client_id < 3);
+        }
+
+        agent_handle.abort();
+    }
+
+    #[tokio::test]
+    async fn test_unsubscribe() {
+        let (agent_config, _tmp) = test_agent_config();
+        let socket_path = agent_config.socket_path();
+
+        let agent = Arc::new(Agent::new(agent_config).unwrap());
+        let agent_handle = {
+            let agent = agent.clone();
+            tokio::spawn(async move {
+                let _ = agent.run().await;
+            })
+        };
+
+        sleep(Duration::from_millis(500)).await;
+
+        let stream = UnixStream::connect(&socket_path).await.unwrap();
+        let (reader, mut writer) = stream.into_split();
+        let mut reader = BufReader::new(reader);
+
+        // 握手
+        let handshake = Request::Handshake {
+            component: "test".to_string(),
+            version: "1.0.0".to_string(),
+        };
+        writer
+            .write_all(format!("{}\n", serde_json::to_string(&handshake).unwrap()).as_bytes())
+            .await
+            .unwrap();
+
+        let mut line = String::new();
+        reader.read_line(&mut line).await.unwrap();
+
+        // 订阅
+        line.clear();
+        let subscribe = Request::Subscribe {
+            events: vec![EventType::NewMessage],
+        };
+        writer
+            .write_all(format!("{}\n", serde_json::to_string(&subscribe).unwrap()).as_bytes())
+            .await
+            .unwrap();
+
+        reader.read_line(&mut line).await.unwrap();
+        assert!(matches!(serde_json::from_str::<Response>(&line).unwrap(), Response::Ok));
+
+        // 取消订阅
+        line.clear();
+        let unsubscribe = Request::Unsubscribe {
+            events: vec![EventType::NewMessage],
+        };
+        writer
+            .write_all(format!("{}\n", serde_json::to_string(&unsubscribe).unwrap()).as_bytes())
+            .await
+            .unwrap();
+
+        reader.read_line(&mut line).await.unwrap();
+        let response: Response = serde_json::from_str(&line).unwrap();
+        assert!(matches!(response, Response::Ok));
+
+        agent_handle.abort();
+    }
+
+    #[tokio::test]
+    async fn test_connection_count_query() {
+        let (agent_config, _tmp) = test_agent_config();
+        let socket_path = agent_config.socket_path();
+
+        let agent = Arc::new(Agent::new(agent_config).unwrap());
+        let agent_handle = {
+            let agent = agent.clone();
+            tokio::spawn(async move {
+                let _ = agent.run().await;
+            })
+        };
+
+        sleep(Duration::from_millis(500)).await;
+
+        let stream = UnixStream::connect(&socket_path).await.unwrap();
+        let (reader, mut writer) = stream.into_split();
+        let mut reader = BufReader::new(reader);
+
+        // 握手
+        let handshake = Request::Handshake {
+            component: "test".to_string(),
+            version: "1.0.0".to_string(),
+        };
+        writer
+            .write_all(format!("{}\n", serde_json::to_string(&handshake).unwrap()).as_bytes())
+            .await
+            .unwrap();
+
+        let mut line = String::new();
+        reader.read_line(&mut line).await.unwrap();
+
+        // 查询连接数
+        line.clear();
+        let query = Request::Query {
+            query_type: QueryType::ConnectionCount,
+        };
+        writer
+            .write_all(format!("{}\n", serde_json::to_string(&query).unwrap()).as_bytes())
+            .await
+            .unwrap();
+
+        reader.read_line(&mut line).await.unwrap();
+        let response: Response = serde_json::from_str(&line).unwrap();
+
+        match response {
+            Response::QueryResult { data } => {
+                let count = data.get("count").and_then(|v| v.as_i64()).unwrap_or(0);
+                assert!(count >= 1); // 至少有当前连接
+            }
+            _ => panic!("Expected QueryResult"),
+        }
+
+        agent_handle.abort();
     }
 }

@@ -16,25 +16,33 @@ use crate::reader::SessionReader;
 use crate::{ClaudeAdapter, ConversationAdapter};
 use ai_cli_session_collector::MessageType;
 
-/// FFI 友好的错误码
+/// FFI 统一错误码
 #[repr(C)]
-#[derive(PartialEq)]
-pub enum SessionDbError {
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FfiError {
     Success = 0,
     NullPointer = 1,
     InvalidUtf8 = 2,
+    // 数据库相关
     DatabaseError = 3,
     CoordinationError = 4,
     PermissionDenied = 5,
+    // Agent Client 相关
+    ConnectionFailed = 6,
+    NotConnected = 7,
+    RequestFailed = 8,
+    AgentNotFound = 9,
+    RuntimeError = 10,
+    // 通用
     Unknown = 99,
 }
 
-/// 将 Rust Error 映射到 FFI SessionDbError
-fn map_error(e: crate::error::Error) -> SessionDbError {
+/// 将 Rust Error 映射到 FfiError
+fn map_error(e: crate::error::Error) -> FfiError {
     match e {
-        crate::error::Error::PermissionDenied => SessionDbError::PermissionDenied,
-        crate::error::Error::Coordination(_) => SessionDbError::CoordinationError,
-        _ => SessionDbError::DatabaseError,
+        crate::error::Error::PermissionDenied => FfiError::PermissionDenied,
+        crate::error::Error::Coordination(_) => FfiError::CoordinationError,
+        _ => FfiError::DatabaseError,
     }
 }
 
@@ -51,9 +59,9 @@ pub struct SessionDbHandle {
 pub unsafe extern "C" fn session_db_connect(
     path: *const c_char,
     out_handle: *mut *mut SessionDbHandle,
-) -> SessionDbError {
+) -> FfiError {
     if out_handle.is_null() {
-        return SessionDbError::NullPointer;
+        return FfiError::NullPointer;
     }
 
     // path 为 null 时使用默认配置
@@ -62,7 +70,7 @@ pub unsafe extern "C" fn session_db_connect(
     } else {
         match CStr::from_ptr(path).to_str() {
             Ok(s) => DbConfig::local(s),
-            Err(_) => return SessionDbError::InvalidUtf8,
+            Err(_) => return FfiError::InvalidUtf8,
         }
     };
 
@@ -70,9 +78,9 @@ pub unsafe extern "C" fn session_db_connect(
         Ok(db) => {
             let handle = Box::new(SessionDbHandle { db });
             *out_handle = Box::into_raw(handle);
-            SessionDbError::Success
+            FfiError::Success
         }
-        Err(_) => SessionDbError::DatabaseError,
+        Err(_) => FfiError::DatabaseError,
     }
 }
 
@@ -97,11 +105,11 @@ pub unsafe extern "C" fn session_db_register_writer(
     handle: *mut SessionDbHandle,
     writer_type: i32,
     out_role: *mut i32,
-) -> SessionDbError {
+) -> FfiError {
     use crate::coordination::{Role, WriterType};
 
     if handle.is_null() || out_role.is_null() {
-        return SessionDbError::NullPointer;
+        return FfiError::NullPointer;
     }
 
     let handle = &mut *handle;
@@ -110,7 +118,7 @@ pub unsafe extern "C" fn session_db_register_writer(
         1 => WriterType::VlaudeDaemon,
         2 => WriterType::MemexKit,
         3 => WriterType::VlaudeKit,
-        _ => return SessionDbError::Unknown,
+        _ => return FfiError::Unknown,
     };
 
     match handle.db.register_writer(writer_type) {
@@ -119,9 +127,9 @@ pub unsafe extern "C" fn session_db_register_writer(
                 Role::Writer => 0,
                 Role::Reader => 1,
             };
-            SessionDbError::Success
+            FfiError::Success
         }
-        Err(_) => SessionDbError::CoordinationError,
+        Err(_) => FfiError::CoordinationError,
     }
 }
 
@@ -131,15 +139,15 @@ pub unsafe extern "C" fn session_db_register_writer(
 /// `handle` 必须是有效句柄
 #[cfg(feature = "coordination")]
 #[no_mangle]
-pub unsafe extern "C" fn session_db_heartbeat(handle: *mut SessionDbHandle) -> SessionDbError {
+pub unsafe extern "C" fn session_db_heartbeat(handle: *mut SessionDbHandle) -> FfiError {
     if handle.is_null() {
-        return SessionDbError::NullPointer;
+        return FfiError::NullPointer;
     }
 
     let handle = &*handle;
     match handle.db.heartbeat() {
-        Ok(_) => SessionDbError::Success,
-        Err(_) => SessionDbError::CoordinationError,
+        Ok(_) => FfiError::Success,
+        Err(_) => FfiError::CoordinationError,
     }
 }
 
@@ -149,15 +157,15 @@ pub unsafe extern "C" fn session_db_heartbeat(handle: *mut SessionDbHandle) -> S
 /// `handle` 必须是有效句柄
 #[cfg(feature = "coordination")]
 #[no_mangle]
-pub unsafe extern "C" fn session_db_release_writer(handle: *mut SessionDbHandle) -> SessionDbError {
+pub unsafe extern "C" fn session_db_release_writer(handle: *mut SessionDbHandle) -> FfiError {
     if handle.is_null() {
-        return SessionDbError::NullPointer;
+        return FfiError::NullPointer;
     }
 
     let handle = &*handle;
     match handle.db.release_writer() {
-        Ok(_) => SessionDbError::Success,
-        Err(_) => SessionDbError::CoordinationError,
+        Ok(_) => FfiError::Success,
+        Err(_) => FfiError::CoordinationError,
     }
 }
 
@@ -171,11 +179,11 @@ pub unsafe extern "C" fn session_db_release_writer(handle: *mut SessionDbHandle)
 pub unsafe extern "C" fn session_db_check_writer_health(
     handle: *const SessionDbHandle,
     out_health: *mut i32,
-) -> SessionDbError {
+) -> FfiError {
     use crate::coordination::WriterHealth;
 
     if handle.is_null() || out_health.is_null() {
-        return SessionDbError::NullPointer;
+        return FfiError::NullPointer;
     }
 
     let handle = &*handle;
@@ -186,9 +194,9 @@ pub unsafe extern "C" fn session_db_check_writer_health(
                 WriterHealth::Timeout => 1,
                 WriterHealth::Released => 2,
             };
-            SessionDbError::Success
+            FfiError::Success
         }
-        Err(_) => SessionDbError::CoordinationError,
+        Err(_) => FfiError::CoordinationError,
     }
 }
 
@@ -202,18 +210,18 @@ pub unsafe extern "C" fn session_db_check_writer_health(
 pub unsafe extern "C" fn session_db_try_takeover(
     handle: *mut SessionDbHandle,
     out_taken: *mut i32,
-) -> SessionDbError {
+) -> FfiError {
     if handle.is_null() || out_taken.is_null() {
-        return SessionDbError::NullPointer;
+        return FfiError::NullPointer;
     }
 
     let handle = &mut *handle;
     match handle.db.try_takeover() {
         Ok(taken) => {
             *out_taken = if taken { 1 } else { 0 };
-            SessionDbError::Success
+            FfiError::Success
         }
-        Err(_) => SessionDbError::CoordinationError,
+        Err(_) => FfiError::CoordinationError,
     }
 }
 
@@ -232,11 +240,11 @@ pub unsafe extern "C" fn session_db_register_writer_and_collect(
     writer_type: i32,
     out_role: *mut i32,
     out_result: *mut *mut CollectResultC,
-) -> SessionDbError {
+) -> FfiError {
     use crate::coordination::{Role, WriterType};
 
     if handle.is_null() || out_role.is_null() {
-        return SessionDbError::NullPointer;
+        return FfiError::NullPointer;
     }
 
     let handle = &mut *handle;
@@ -245,7 +253,7 @@ pub unsafe extern "C" fn session_db_register_writer_and_collect(
         1 => WriterType::VlaudeDaemon,
         2 => WriterType::MemexKit,
         3 => WriterType::VlaudeKit,
-        _ => return SessionDbError::Unknown,
+        _ => return FfiError::Unknown,
     };
 
     match handle.db.register_writer_and_collect(writer_type) {
@@ -279,9 +287,9 @@ pub unsafe extern "C" fn session_db_register_writer_and_collect(
                 }
             }
 
-            SessionDbError::Success
+            FfiError::Success
         }
-        Err(_) => SessionDbError::CoordinationError,
+        Err(_) => FfiError::CoordinationError,
     }
 }
 
@@ -295,9 +303,9 @@ pub unsafe extern "C" fn session_db_get_stats(
     out_projects: *mut i64,
     out_sessions: *mut i64,
     out_messages: *mut i64,
-) -> SessionDbError {
+) -> FfiError {
     if handle.is_null() {
-        return SessionDbError::NullPointer;
+        return FfiError::NullPointer;
     }
 
     let handle = &*handle;
@@ -312,9 +320,9 @@ pub unsafe extern "C" fn session_db_get_stats(
             if !out_messages.is_null() {
                 *out_messages = stats.message_count;
             }
-            SessionDbError::Success
+            FfiError::Success
         }
-        Err(_) => SessionDbError::DatabaseError,
+        Err(_) => FfiError::DatabaseError,
     }
 }
 
@@ -331,25 +339,25 @@ pub unsafe extern "C" fn session_db_upsert_project(
     path: *const c_char,
     source: *const c_char,
     out_id: *mut i64,
-) -> SessionDbError {
+) -> FfiError {
     if handle.is_null() || name.is_null() || path.is_null() || source.is_null() || out_id.is_null()
     {
-        return SessionDbError::NullPointer;
+        return FfiError::NullPointer;
     }
 
     let result = panic::catch_unwind(AssertUnwindSafe(|| {
         let handle = &*handle;
         let name_str = match CStr::from_ptr(name).to_str() {
             Ok(s) => s,
-            Err(_) => return Err(SessionDbError::InvalidUtf8),
+            Err(_) => return Err(FfiError::InvalidUtf8),
         };
         let path_str = match CStr::from_ptr(path).to_str() {
             Ok(s) => s,
-            Err(_) => return Err(SessionDbError::InvalidUtf8),
+            Err(_) => return Err(FfiError::InvalidUtf8),
         };
         let source_str = match CStr::from_ptr(source).to_str() {
             Ok(s) => s,
-            Err(_) => return Err(SessionDbError::InvalidUtf8),
+            Err(_) => return Err(FfiError::InvalidUtf8),
         };
 
         match handle
@@ -364,10 +372,10 @@ pub unsafe extern "C" fn session_db_upsert_project(
     match result {
         Ok(Ok(id)) => {
             *out_id = id;
-            SessionDbError::Success
+            FfiError::Success
         }
         Ok(Err(e)) => e,
-        Err(_) => SessionDbError::Unknown,
+        Err(_) => FfiError::Unknown,
     }
 }
 
@@ -397,16 +405,16 @@ pub struct Project {
 pub unsafe extern "C" fn session_db_list_projects(
     handle: *const SessionDbHandle,
     out_array: *mut *mut ProjectArray,
-) -> SessionDbError {
+) -> FfiError {
     if handle.is_null() || out_array.is_null() {
-        return SessionDbError::NullPointer;
+        return FfiError::NullPointer;
     }
 
     let result = panic::catch_unwind(AssertUnwindSafe(|| {
         let handle = &*handle;
         match handle.db.list_projects() {
             Ok(projects) => Ok(projects),
-            Err(_) => Err(SessionDbError::DatabaseError),
+            Err(_) => Err(FfiError::DatabaseError),
         }
     }));
 
@@ -416,15 +424,15 @@ pub unsafe extern "C" fn session_db_list_projects(
             for p in projects {
                 let name = match CString::new(p.name) {
                     Ok(s) => s.into_raw(),
-                    Err(_) => return SessionDbError::InvalidUtf8,
+                    Err(_) => return FfiError::InvalidUtf8,
                 };
                 let path = match CString::new(p.path) {
                     Ok(s) => s.into_raw(),
-                    Err(_) => return SessionDbError::InvalidUtf8,
+                    Err(_) => return FfiError::InvalidUtf8,
                 };
                 let source = match CString::new(p.source) {
                     Ok(s) => s.into_raw(),
-                    Err(_) => return SessionDbError::InvalidUtf8,
+                    Err(_) => return FfiError::InvalidUtf8,
                 };
 
                 c_projects.push(Project {
@@ -443,10 +451,10 @@ pub unsafe extern "C" fn session_db_list_projects(
 
             let array = Box::new(ProjectArray { data, len });
             *out_array = Box::into_raw(array);
-            SessionDbError::Success
+            FfiError::Success
         }
         Ok(Err(e)) => e,
-        Err(_) => SessionDbError::Unknown,
+        Err(_) => FfiError::Unknown,
     }
 }
 
@@ -486,16 +494,16 @@ pub unsafe extern "C" fn session_db_upsert_session(
     handle: *mut SessionDbHandle,
     session_id: *const c_char,
     project_id: i64,
-) -> SessionDbError {
+) -> FfiError {
     if handle.is_null() || session_id.is_null() {
-        return SessionDbError::NullPointer;
+        return FfiError::NullPointer;
     }
 
     let result = panic::catch_unwind(AssertUnwindSafe(|| {
         let handle = &*handle;
         let session_id_str = match CStr::from_ptr(session_id).to_str() {
             Ok(s) => s,
-            Err(_) => return Err(SessionDbError::InvalidUtf8),
+            Err(_) => return Err(FfiError::InvalidUtf8),
         };
         match handle.db.upsert_session(session_id_str, project_id) {
             Ok(_) => Ok(()),
@@ -504,9 +512,9 @@ pub unsafe extern "C" fn session_db_upsert_session(
     }));
 
     match result {
-        Ok(Ok(_)) => SessionDbError::Success,
+        Ok(Ok(_)) => FfiError::Success,
         Ok(Err(e)) => e,
-        Err(_) => SessionDbError::Unknown,
+        Err(_) => FfiError::Unknown,
     }
 }
 
@@ -538,16 +546,16 @@ pub unsafe extern "C" fn session_db_list_sessions(
     handle: *const SessionDbHandle,
     project_id: i64,
     out_array: *mut *mut SessionArray,
-) -> SessionDbError {
+) -> FfiError {
     if handle.is_null() || out_array.is_null() {
-        return SessionDbError::NullPointer;
+        return FfiError::NullPointer;
     }
 
     let result = panic::catch_unwind(AssertUnwindSafe(|| {
         let handle = &*handle;
         match handle.db.list_sessions(project_id) {
             Ok(sessions) => Ok(sessions),
-            Err(_) => Err(SessionDbError::DatabaseError),
+            Err(_) => Err(FfiError::DatabaseError),
         }
     }));
 
@@ -557,7 +565,7 @@ pub unsafe extern "C" fn session_db_list_sessions(
             for s in sessions {
                 let session_id = match CString::new(s.session_id) {
                     Ok(s) => s.into_raw(),
-                    Err(_) => return SessionDbError::InvalidUtf8,
+                    Err(_) => return FfiError::InvalidUtf8,
                 };
 
                 c_sessions.push(Session {
@@ -577,10 +585,10 @@ pub unsafe extern "C" fn session_db_list_sessions(
 
             let array = Box::new(SessionArray { data, len });
             *out_array = Box::into_raw(array);
-            SessionDbError::Success
+            FfiError::Success
         }
         Ok(Err(e)) => e,
-        Err(_) => SessionDbError::Unknown,
+        Err(_) => FfiError::Unknown,
     }
 }
 
@@ -612,34 +620,34 @@ pub unsafe extern "C" fn session_db_get_scan_checkpoint(
     handle: *const SessionDbHandle,
     session_id: *const c_char,
     out_timestamp: *mut i64,
-) -> SessionDbError {
+) -> FfiError {
     if handle.is_null() || session_id.is_null() || out_timestamp.is_null() {
-        return SessionDbError::NullPointer;
+        return FfiError::NullPointer;
     }
 
     let result = panic::catch_unwind(AssertUnwindSafe(|| {
         let handle = &*handle;
         let session_id_str = match CStr::from_ptr(session_id).to_str() {
             Ok(s) => s,
-            Err(_) => return Err(SessionDbError::InvalidUtf8),
+            Err(_) => return Err(FfiError::InvalidUtf8),
         };
         match handle.db.get_scan_checkpoint(session_id_str) {
             Ok(ts) => Ok(ts),
-            Err(_) => Err(SessionDbError::DatabaseError),
+            Err(_) => Err(FfiError::DatabaseError),
         }
     }));
 
     match result {
         Ok(Ok(Some(ts))) => {
             *out_timestamp = ts;
-            SessionDbError::Success
+            FfiError::Success
         }
         Ok(Ok(None)) => {
             *out_timestamp = -1; // 使用 -1 表示 NULL
-            SessionDbError::Success
+            FfiError::Success
         }
         Ok(Err(e)) => e,
-        Err(_) => SessionDbError::Unknown,
+        Err(_) => FfiError::Unknown,
     }
 }
 
@@ -652,16 +660,16 @@ pub unsafe extern "C" fn session_db_update_session_last_message(
     handle: *mut SessionDbHandle,
     session_id: *const c_char,
     timestamp: i64,
-) -> SessionDbError {
+) -> FfiError {
     if handle.is_null() || session_id.is_null() {
-        return SessionDbError::NullPointer;
+        return FfiError::NullPointer;
     }
 
     let result = panic::catch_unwind(AssertUnwindSafe(|| {
         let handle = &*handle;
         let session_id_str = match CStr::from_ptr(session_id).to_str() {
             Ok(s) => s,
-            Err(_) => return Err(SessionDbError::InvalidUtf8),
+            Err(_) => return Err(FfiError::InvalidUtf8),
         };
         match handle
             .db
@@ -673,9 +681,9 @@ pub unsafe extern "C" fn session_db_update_session_last_message(
     }));
 
     match result {
-        Ok(Ok(_)) => SessionDbError::Success,
+        Ok(Ok(_)) => FfiError::Success,
         Ok(Err(e)) => e,
-        Err(_) => SessionDbError::Unknown,
+        Err(_) => FfiError::Unknown,
     }
 }
 
@@ -702,16 +710,16 @@ pub unsafe extern "C" fn session_db_insert_messages(
     messages: *const MessageInputC,
     message_count: usize,
     out_inserted: *mut usize,
-) -> SessionDbError {
+) -> FfiError {
     if handle.is_null() || session_id.is_null() || messages.is_null() {
-        return SessionDbError::NullPointer;
+        return FfiError::NullPointer;
     }
 
     let result = panic::catch_unwind(AssertUnwindSafe(|| {
         let handle = &*handle;
         let session_id_str = match CStr::from_ptr(session_id).to_str() {
             Ok(s) => s,
-            Err(_) => return Err(SessionDbError::InvalidUtf8),
+            Err(_) => return Err(FfiError::InvalidUtf8),
         };
 
         let messages_slice = std::slice::from_raw_parts(messages, message_count);
@@ -720,17 +728,17 @@ pub unsafe extern "C" fn session_db_insert_messages(
         for msg in messages_slice {
             let uuid = match CStr::from_ptr(msg.uuid).to_str() {
                 Ok(s) => s.to_string(),
-                Err(_) => return Err(SessionDbError::InvalidUtf8),
+                Err(_) => return Err(FfiError::InvalidUtf8),
             };
             let content = match CStr::from_ptr(msg.content).to_str() {
                 Ok(s) => s.to_string(),
-                Err(_) => return Err(SessionDbError::InvalidUtf8),
+                Err(_) => return Err(FfiError::InvalidUtf8),
             };
             let msg_type = match msg.role {
                 0 => MessageType::User,
                 1 => MessageType::Assistant,
                 2 => MessageType::Tool,
-                _ => return Err(SessionDbError::Unknown),
+                _ => return Err(FfiError::Unknown),
             };
 
             // FFI 层简化：单一 content 映射到 content_text 和 content_full
@@ -764,10 +772,10 @@ pub unsafe extern "C" fn session_db_insert_messages(
             if !out_inserted.is_null() {
                 *out_inserted = inserted;
             }
-            SessionDbError::Success
+            FfiError::Success
         }
         Ok(Err(e)) => e,
-        Err(_) => SessionDbError::Unknown,
+        Err(_) => FfiError::Unknown,
     }
 }
 
@@ -802,20 +810,20 @@ pub unsafe extern "C" fn session_db_list_messages(
     limit: usize,
     offset: usize,
     out_array: *mut *mut MessageArray,
-) -> SessionDbError {
+) -> FfiError {
     if handle.is_null() || session_id.is_null() || out_array.is_null() {
-        return SessionDbError::NullPointer;
+        return FfiError::NullPointer;
     }
 
     let result = panic::catch_unwind(AssertUnwindSafe(|| {
         let handle = &*handle;
         let session_id_str = match CStr::from_ptr(session_id).to_str() {
             Ok(s) => s,
-            Err(_) => return Err(SessionDbError::InvalidUtf8),
+            Err(_) => return Err(FfiError::InvalidUtf8),
         };
         match handle.db.list_messages(session_id_str, limit, offset) {
             Ok(messages) => Ok(messages),
-            Err(_) => Err(SessionDbError::DatabaseError),
+            Err(_) => Err(FfiError::DatabaseError),
         }
     }));
 
@@ -825,16 +833,16 @@ pub unsafe extern "C" fn session_db_list_messages(
             for m in messages {
                 let session_id = match CString::new(m.session_id) {
                     Ok(s) => s.into_raw(),
-                    Err(_) => return SessionDbError::InvalidUtf8,
+                    Err(_) => return FfiError::InvalidUtf8,
                 };
                 let uuid = match CString::new(m.uuid) {
                     Ok(s) => s.into_raw(),
-                    Err(_) => return SessionDbError::InvalidUtf8,
+                    Err(_) => return FfiError::InvalidUtf8,
                 };
                 // FFI 输出使用 content_full
                 let content = match CString::new(m.content_full) {
                     Ok(s) => s.into_raw(),
-                    Err(_) => return SessionDbError::InvalidUtf8,
+                    Err(_) => return FfiError::InvalidUtf8,
                 };
 
                 let role = match m.r#type {
@@ -869,10 +877,10 @@ pub unsafe extern "C" fn session_db_list_messages(
 
             let array = Box::new(MessageArray { data, len });
             *out_array = Box::into_raw(array);
-            SessionDbError::Success
+            FfiError::Success
         }
         Ok(Err(e)) => e,
-        Err(_) => SessionDbError::Unknown,
+        Err(_) => FfiError::Unknown,
     }
 }
 
@@ -966,21 +974,21 @@ pub unsafe extern "C" fn session_db_search_fts(
     query: *const c_char,
     limit: usize,
     out_array: *mut *mut SearchResultArray,
-) -> SessionDbError {
+) -> FfiError {
     if handle.is_null() || query.is_null() || out_array.is_null() {
-        return SessionDbError::NullPointer;
+        return FfiError::NullPointer;
     }
 
     let result = panic::catch_unwind(AssertUnwindSafe(|| {
         let handle = &*handle;
         let query_str = match CStr::from_ptr(query).to_str() {
             Ok(s) => s,
-            Err(_) => return Err(SessionDbError::InvalidUtf8),
+            Err(_) => return Err(FfiError::InvalidUtf8),
         };
         let escaped_query = escape_fts5_query(query_str);
         match handle.db.search_fts(&escaped_query, limit) {
             Ok(results) => Ok(results),
-            Err(_) => Err(SessionDbError::DatabaseError),
+            Err(_) => Err(FfiError::DatabaseError),
         }
     }));
 
@@ -990,24 +998,24 @@ pub unsafe extern "C" fn session_db_search_fts(
             for r in results {
                 let session_id = match CString::new(r.session_id) {
                     Ok(s) => s.into_raw(),
-                    Err(_) => return SessionDbError::InvalidUtf8,
+                    Err(_) => return FfiError::InvalidUtf8,
                 };
                 let project_name = match CString::new(r.project_name) {
                     Ok(s) => s.into_raw(),
-                    Err(_) => return SessionDbError::InvalidUtf8,
+                    Err(_) => return FfiError::InvalidUtf8,
                 };
                 let role = match CString::new(r.r#type.clone()) {
                     Ok(s) => s.into_raw(),
-                    Err(_) => return SessionDbError::InvalidUtf8,
+                    Err(_) => return FfiError::InvalidUtf8,
                 };
                 // 搜索结果使用 content_full
                 let content = match CString::new(r.content_full) {
                     Ok(s) => s.into_raw(),
-                    Err(_) => return SessionDbError::InvalidUtf8,
+                    Err(_) => return FfiError::InvalidUtf8,
                 };
                 let snippet = match CString::new(r.snippet) {
                     Ok(s) => s.into_raw(),
-                    Err(_) => return SessionDbError::InvalidUtf8,
+                    Err(_) => return FfiError::InvalidUtf8,
                 };
 
                 c_results.push(SearchResultC {
@@ -1029,10 +1037,10 @@ pub unsafe extern "C" fn session_db_search_fts(
 
             let array = Box::new(SearchResultArray { data, len });
             *out_array = Box::into_raw(array);
-            SessionDbError::Success
+            FfiError::Success
         }
         Ok(Err(e)) => e,
-        Err(_) => SessionDbError::Unknown,
+        Err(_) => FfiError::Unknown,
     }
 }
 
@@ -1048,16 +1056,16 @@ pub unsafe extern "C" fn session_db_search_fts_with_project(
     limit: usize,
     project_id: i64,
     out_array: *mut *mut SearchResultArray,
-) -> SessionDbError {
+) -> FfiError {
     if handle.is_null() || query.is_null() || out_array.is_null() {
-        return SessionDbError::NullPointer;
+        return FfiError::NullPointer;
     }
 
     let result = panic::catch_unwind(AssertUnwindSafe(|| {
         let handle = &*handle;
         let query_str = match CStr::from_ptr(query).to_str() {
             Ok(s) => s,
-            Err(_) => return Err(SessionDbError::InvalidUtf8),
+            Err(_) => return Err(FfiError::InvalidUtf8),
         };
         let escaped_query = escape_fts5_query(query_str);
         let pid = if project_id >= 0 {
@@ -1070,7 +1078,7 @@ pub unsafe extern "C" fn session_db_search_fts_with_project(
             .search_fts_with_project(&escaped_query, limit, pid)
         {
             Ok(results) => Ok(results),
-            Err(_) => Err(SessionDbError::DatabaseError),
+            Err(_) => Err(FfiError::DatabaseError),
         }
     }));
 
@@ -1080,24 +1088,24 @@ pub unsafe extern "C" fn session_db_search_fts_with_project(
             for r in results {
                 let session_id = match CString::new(r.session_id) {
                     Ok(s) => s.into_raw(),
-                    Err(_) => return SessionDbError::InvalidUtf8,
+                    Err(_) => return FfiError::InvalidUtf8,
                 };
                 let project_name = match CString::new(r.project_name) {
                     Ok(s) => s.into_raw(),
-                    Err(_) => return SessionDbError::InvalidUtf8,
+                    Err(_) => return FfiError::InvalidUtf8,
                 };
                 let role = match CString::new(r.r#type.clone()) {
                     Ok(s) => s.into_raw(),
-                    Err(_) => return SessionDbError::InvalidUtf8,
+                    Err(_) => return FfiError::InvalidUtf8,
                 };
                 // 搜索结果使用 content_full
                 let content = match CString::new(r.content_full) {
                     Ok(s) => s.into_raw(),
-                    Err(_) => return SessionDbError::InvalidUtf8,
+                    Err(_) => return FfiError::InvalidUtf8,
                 };
                 let snippet = match CString::new(r.snippet) {
                     Ok(s) => s.into_raw(),
-                    Err(_) => return SessionDbError::InvalidUtf8,
+                    Err(_) => return FfiError::InvalidUtf8,
                 };
 
                 c_results.push(SearchResultC {
@@ -1119,10 +1127,10 @@ pub unsafe extern "C" fn session_db_search_fts_with_project(
 
             let array = Box::new(SearchResultArray { data, len });
             *out_array = Box::into_raw(array);
-            SessionDbError::Success
+            FfiError::Success
         }
         Ok(Err(e)) => e,
-        Err(_) => SessionDbError::Unknown,
+        Err(_) => FfiError::Unknown,
     }
 }
 
@@ -1182,16 +1190,16 @@ pub unsafe extern "C" fn session_db_search_fts_full(
     start_timestamp: i64,
     end_timestamp: i64,
     out_array: *mut *mut SearchResultArray,
-) -> SessionDbError {
+) -> FfiError {
     if handle.is_null() || query.is_null() || out_array.is_null() {
-        return SessionDbError::NullPointer;
+        return FfiError::NullPointer;
     }
 
     let result = panic::catch_unwind(AssertUnwindSafe(|| {
         let handle = &*handle;
         let query_str = match CStr::from_ptr(query).to_str() {
             Ok(s) => s,
-            Err(_) => return Err(SessionDbError::InvalidUtf8),
+            Err(_) => return Err(FfiError::InvalidUtf8),
         };
         let escaped_query = escape_fts5_query(query_str);
         let pid = if project_id >= 0 {
@@ -1215,7 +1223,7 @@ pub unsafe extern "C" fn session_db_search_fts_full(
             .search_fts_full(&escaped_query, limit, pid, order, start_ts, end_ts)
         {
             Ok(results) => Ok(results),
-            Err(_) => Err(SessionDbError::DatabaseError),
+            Err(_) => Err(FfiError::DatabaseError),
         }
     }));
 
@@ -1225,23 +1233,23 @@ pub unsafe extern "C" fn session_db_search_fts_full(
             for r in results {
                 let session_id = match CString::new(r.session_id) {
                     Ok(s) => s.into_raw(),
-                    Err(_) => return SessionDbError::InvalidUtf8,
+                    Err(_) => return FfiError::InvalidUtf8,
                 };
                 let project_name = match CString::new(r.project_name) {
                     Ok(s) => s.into_raw(),
-                    Err(_) => return SessionDbError::InvalidUtf8,
+                    Err(_) => return FfiError::InvalidUtf8,
                 };
                 let role = match CString::new(r.r#type.clone()) {
                     Ok(s) => s.into_raw(),
-                    Err(_) => return SessionDbError::InvalidUtf8,
+                    Err(_) => return FfiError::InvalidUtf8,
                 };
                 let content = match CString::new(r.content_full) {
                     Ok(s) => s.into_raw(),
-                    Err(_) => return SessionDbError::InvalidUtf8,
+                    Err(_) => return FfiError::InvalidUtf8,
                 };
                 let snippet = match CString::new(r.snippet) {
                     Ok(s) => s.into_raw(),
-                    Err(_) => return SessionDbError::InvalidUtf8,
+                    Err(_) => return FfiError::InvalidUtf8,
                 };
 
                 c_results.push(SearchResultC {
@@ -1263,10 +1271,10 @@ pub unsafe extern "C" fn session_db_search_fts_full(
 
             let array = Box::new(SearchResultArray { data, len });
             *out_array = Box::into_raw(array);
-            SessionDbError::Success
+            FfiError::Success
         }
         Ok(Err(e)) => e,
-        Err(_) => SessionDbError::Unknown,
+        Err(_) => FfiError::Unknown,
     }
 }
 
@@ -1291,16 +1299,16 @@ pub unsafe extern "C" fn session_db_search_fts_with_options(
     project_id: i64,
     order_by: SearchOrderByC,
     out_array: *mut *mut SearchResultArray,
-) -> SessionDbError {
+) -> FfiError {
     if handle.is_null() || query.is_null() || out_array.is_null() {
-        return SessionDbError::NullPointer;
+        return FfiError::NullPointer;
     }
 
     let result = panic::catch_unwind(AssertUnwindSafe(|| {
         let handle = &*handle;
         let query_str = match CStr::from_ptr(query).to_str() {
             Ok(s) => s,
-            Err(_) => return Err(SessionDbError::InvalidUtf8),
+            Err(_) => return Err(FfiError::InvalidUtf8),
         };
         let escaped_query = escape_fts5_query(query_str);
         let pid = if project_id >= 0 {
@@ -1314,7 +1322,7 @@ pub unsafe extern "C" fn session_db_search_fts_with_options(
             .search_fts_with_options(&escaped_query, limit, pid, order)
         {
             Ok(results) => Ok(results),
-            Err(_) => Err(SessionDbError::DatabaseError),
+            Err(_) => Err(FfiError::DatabaseError),
         }
     }));
 
@@ -1324,23 +1332,23 @@ pub unsafe extern "C" fn session_db_search_fts_with_options(
             for r in results {
                 let session_id = match CString::new(r.session_id) {
                     Ok(s) => s.into_raw(),
-                    Err(_) => return SessionDbError::InvalidUtf8,
+                    Err(_) => return FfiError::InvalidUtf8,
                 };
                 let project_name = match CString::new(r.project_name) {
                     Ok(s) => s.into_raw(),
-                    Err(_) => return SessionDbError::InvalidUtf8,
+                    Err(_) => return FfiError::InvalidUtf8,
                 };
                 let role = match CString::new(r.r#type.clone()) {
                     Ok(s) => s.into_raw(),
-                    Err(_) => return SessionDbError::InvalidUtf8,
+                    Err(_) => return FfiError::InvalidUtf8,
                 };
                 let content = match CString::new(r.content_full) {
                     Ok(s) => s.into_raw(),
-                    Err(_) => return SessionDbError::InvalidUtf8,
+                    Err(_) => return FfiError::InvalidUtf8,
                 };
                 let snippet = match CString::new(r.snippet) {
                     Ok(s) => s.into_raw(),
-                    Err(_) => return SessionDbError::InvalidUtf8,
+                    Err(_) => return FfiError::InvalidUtf8,
                 };
 
                 c_results.push(SearchResultC {
@@ -1362,10 +1370,10 @@ pub unsafe extern "C" fn session_db_search_fts_with_options(
 
             let array = Box::new(SearchResultArray { data, len });
             *out_array = Box::into_raw(array);
-            SessionDbError::Success
+            FfiError::Success
         }
         Ok(Err(e)) => e,
-        Err(_) => SessionDbError::Unknown,
+        Err(_) => FfiError::Unknown,
     }
 }
 
@@ -1412,16 +1420,16 @@ pub unsafe extern "C" fn session_db_update_approval_status_by_tool_call_id(
     status: ApprovalStatusC,
     resolved_at: i64,
     out_updated: *mut usize,
-) -> SessionDbError {
+) -> FfiError {
     if handle.is_null() || tool_call_id.is_null() {
-        return SessionDbError::NullPointer;
+        return FfiError::NullPointer;
     }
 
     let result = panic::catch_unwind(AssertUnwindSafe(|| {
         let handle = &*handle;
         let tool_call_id_str = match CStr::from_ptr(tool_call_id).to_str() {
             Ok(s) => s,
-            Err(_) => return Err(SessionDbError::InvalidUtf8),
+            Err(_) => return Err(FfiError::InvalidUtf8),
         };
 
         let rust_status: crate::types::ApprovalStatus = status.into();
@@ -1441,10 +1449,10 @@ pub unsafe extern "C" fn session_db_update_approval_status_by_tool_call_id(
             if !out_updated.is_null() {
                 *out_updated = count;
             }
-            SessionDbError::Success
+            FfiError::Success
         }
         Ok(Err(e)) => e,
-        Err(_) => SessionDbError::Unknown,
+        Err(_) => FfiError::Unknown,
     }
 }
 
@@ -1493,7 +1501,7 @@ pub struct IndexableSessionC {
 #[repr(C)]
 pub struct ParseResult {
     pub session: *mut IndexableSessionC,
-    pub error: SessionDbError,
+    pub error: FfiError,
 }
 
 /// 解析 JSONL 会话文件
@@ -1516,7 +1524,7 @@ pub unsafe extern "C" fn session_db_parse_jsonl(jsonl_path: *const c_char) -> Pa
     if jsonl_path.is_null() {
         return ParseResult {
             session: std::ptr::null_mut(),
-            error: SessionDbError::NullPointer,
+            error: FfiError::NullPointer,
         };
     }
 
@@ -1525,7 +1533,7 @@ pub unsafe extern "C" fn session_db_parse_jsonl(jsonl_path: *const c_char) -> Pa
         Err(_) => {
             return ParseResult {
                 session: std::ptr::null_mut(),
-                error: SessionDbError::InvalidUtf8,
+                error: FfiError::InvalidUtf8,
             };
         }
     };
@@ -1556,7 +1564,7 @@ pub unsafe extern "C" fn session_db_parse_jsonl(jsonl_path: *const c_char) -> Pa
                         }
                         return ParseResult {
                             session: std::ptr::null_mut(),
-                            error: SessionDbError::InvalidUtf8,
+                            error: FfiError::InvalidUtf8,
                         };
                     }
                 };
@@ -1577,7 +1585,7 @@ pub unsafe extern "C" fn session_db_parse_jsonl(jsonl_path: *const c_char) -> Pa
                         }
                         return ParseResult {
                             session: std::ptr::null_mut(),
-                            error: SessionDbError::InvalidUtf8,
+                            error: FfiError::InvalidUtf8,
                         };
                     }
                 };
@@ -1600,7 +1608,7 @@ pub unsafe extern "C" fn session_db_parse_jsonl(jsonl_path: *const c_char) -> Pa
                         }
                         return ParseResult {
                             session: std::ptr::null_mut(),
-                            error: SessionDbError::InvalidUtf8,
+                            error: FfiError::InvalidUtf8,
                         };
                     }
                 };
@@ -1631,7 +1639,7 @@ pub unsafe extern "C" fn session_db_parse_jsonl(jsonl_path: *const c_char) -> Pa
                     }
                     return ParseResult {
                         session: std::ptr::null_mut(),
-                        error: SessionDbError::InvalidUtf8,
+                        error: FfiError::InvalidUtf8,
                     };
                 }
             };
@@ -1652,7 +1660,7 @@ pub unsafe extern "C" fn session_db_parse_jsonl(jsonl_path: *const c_char) -> Pa
                     }
                     return ParseResult {
                         session: std::ptr::null_mut(),
-                        error: SessionDbError::InvalidUtf8,
+                        error: FfiError::InvalidUtf8,
                     };
                 }
             };
@@ -1674,7 +1682,7 @@ pub unsafe extern "C" fn session_db_parse_jsonl(jsonl_path: *const c_char) -> Pa
                     }
                     return ParseResult {
                         session: std::ptr::null_mut(),
-                        error: SessionDbError::InvalidUtf8,
+                        error: FfiError::InvalidUtf8,
                     };
                 }
             };
@@ -1697,23 +1705,23 @@ pub unsafe extern "C" fn session_db_parse_jsonl(jsonl_path: *const c_char) -> Pa
 
             ParseResult {
                 session: Box::into_raw(c_session),
-                error: SessionDbError::Success,
+                error: FfiError::Success,
             }
         }
         Ok(Ok(None)) => {
             // 文件为空或无有效消息
             ParseResult {
                 session: std::ptr::null_mut(),
-                error: SessionDbError::Success,
+                error: FfiError::Success,
             }
         }
         Ok(Err(_)) => ParseResult {
             session: std::ptr::null_mut(),
-            error: SessionDbError::DatabaseError,
+            error: FfiError::DatabaseError,
         },
         Err(_) => ParseResult {
             session: std::ptr::null_mut(),
-            error: SessionDbError::Unknown,
+            error: FfiError::Unknown,
         },
     }
 }
@@ -1960,20 +1968,20 @@ pub unsafe extern "C" fn session_db_list_file_projects(
     projects_path: *const c_char,
     limit: u32,
     out_array: *mut *mut ProjectInfoArray,
-) -> SessionDbError {
+) -> FfiError {
     if out_array.is_null() {
-        return SessionDbError::NullPointer;
+        return FfiError::NullPointer;
     }
 
     let result = panic::catch_unwind(AssertUnwindSafe(|| {
         // 获取 projects 目录路径
         let path = if projects_path.is_null() {
-            let home = std::env::var("HOME").map_err(|_| SessionDbError::Unknown)?;
+            let home = std::env::var("HOME").map_err(|_| FfiError::Unknown)?;
             PathBuf::from(home).join(".claude/projects")
         } else {
             let path_str = CStr::from_ptr(projects_path)
                 .to_str()
-                .map_err(|_| SessionDbError::InvalidUtf8)?;
+                .map_err(|_| FfiError::InvalidUtf8)?;
             PathBuf::from(path_str)
         };
 
@@ -2033,10 +2041,10 @@ pub unsafe extern "C" fn session_db_list_file_projects(
 
             let array = Box::new(ProjectInfoArray { data, len });
             *out_array = Box::into_raw(array);
-            SessionDbError::Success
+            FfiError::Success
         }
         Ok(Err(e)) => e,
-        Err(_) => SessionDbError::Unknown,
+        Err(_) => FfiError::Unknown,
     }
 }
 
@@ -2102,20 +2110,20 @@ pub unsafe extern "C" fn session_db_list_session_metas(
     projects_path: *const c_char,
     project_path: *const c_char,
     out_array: *mut *mut SessionMetaArray,
-) -> SessionDbError {
+) -> FfiError {
     if out_array.is_null() {
-        return SessionDbError::NullPointer;
+        return FfiError::NullPointer;
     }
 
     let result = panic::catch_unwind(AssertUnwindSafe(|| {
         // 获取 projects 目录路径
         let path = if projects_path.is_null() {
-            let home = std::env::var("HOME").map_err(|_| SessionDbError::Unknown)?;
+            let home = std::env::var("HOME").map_err(|_| FfiError::Unknown)?;
             PathBuf::from(home).join(".claude/projects")
         } else {
             let path_str = CStr::from_ptr(projects_path)
                 .to_str()
-                .map_err(|_| SessionDbError::InvalidUtf8)?;
+                .map_err(|_| FfiError::InvalidUtf8)?;
             PathBuf::from(path_str)
         };
 
@@ -2125,7 +2133,7 @@ pub unsafe extern "C" fn session_db_list_session_metas(
             Some(
                 CStr::from_ptr(project_path)
                     .to_str()
-                    .map_err(|_| SessionDbError::InvalidUtf8)?,
+                    .map_err(|_| FfiError::InvalidUtf8)?,
             )
         };
 
@@ -2195,10 +2203,10 @@ pub unsafe extern "C" fn session_db_list_session_metas(
 
             let array = Box::new(SessionMetaArray { data, len });
             *out_array = Box::into_raw(array);
-            SessionDbError::Success
+            FfiError::Success
         }
         Ok(Err(e)) => e,
-        Err(_) => SessionDbError::Unknown,
+        Err(_) => FfiError::Unknown,
     }
 }
 
@@ -2255,15 +2263,15 @@ pub unsafe extern "C" fn session_db_find_latest_session(
     project_path: *const c_char,
     within_seconds: u64,
     out_session: *mut *mut SessionMetaC,
-) -> SessionDbError {
+) -> FfiError {
     if project_path.is_null() || out_session.is_null() {
-        return SessionDbError::NullPointer;
+        return FfiError::NullPointer;
     }
 
     // 先获取会话列表
     let mut session_array: *mut SessionMetaArray = std::ptr::null_mut();
     let err = session_db_list_session_metas(projects_path, project_path, &mut session_array);
-    if err != SessionDbError::Success {
+    if err != FfiError::Success {
         return err;
     }
 
@@ -2272,7 +2280,7 @@ pub unsafe extern "C" fn session_db_find_latest_session(
         if !session_array.is_null() {
             session_db_free_session_meta_list(session_array);
         }
-        return SessionDbError::Success;
+        return FfiError::Success;
     }
 
     let array = &*session_array;
@@ -2288,7 +2296,7 @@ pub unsafe extern "C" fn session_db_find_latest_session(
         if diff_ms > (within_seconds as i64 * 1000) {
             *out_session = std::ptr::null_mut();
             session_db_free_session_meta_list(session_array);
-            return SessionDbError::Success;
+            return FfiError::Success;
         }
     }
 
@@ -2339,7 +2347,7 @@ pub unsafe extern "C" fn session_db_find_latest_session(
 
     *out_session = Box::into_raw(copy);
     session_db_free_session_meta_list(session_array);
-    SessionDbError::Success
+    FfiError::Success
 }
 
 /// 释放单个 SessionMeta
@@ -2409,15 +2417,15 @@ pub unsafe extern "C" fn session_db_read_session_messages(
     offset: usize,
     order_asc: bool,
     out_result: *mut *mut MessagesResultC,
-) -> SessionDbError {
+) -> FfiError {
     if session_path.is_null() || out_result.is_null() {
-        return SessionDbError::NullPointer;
+        return FfiError::NullPointer;
     }
 
     let result = panic::catch_unwind(AssertUnwindSafe(|| {
         let path_str = CStr::from_ptr(session_path)
             .to_str()
-            .map_err(|_| SessionDbError::InvalidUtf8)?;
+            .map_err(|_| FfiError::InvalidUtf8)?;
 
         // 提取 session_id
         let session_id = std::path::Path::new(path_str)
@@ -2446,13 +2454,13 @@ pub unsafe extern "C" fn session_db_read_session_messages(
         };
 
         // 使用默认路径创建 adapter
-        let home = std::env::var("HOME").map_err(|_| SessionDbError::Unknown)?;
+        let home = std::env::var("HOME").map_err(|_| FfiError::Unknown)?;
         let projects_path = PathBuf::from(home).join(".claude/projects");
         let adapter = ClaudeAdapter::with_path(projects_path);
 
         let parse_result = adapter
             .parse_session(&meta)
-            .map_err(|_| SessionDbError::DatabaseError)?;
+            .map_err(|_| FfiError::DatabaseError)?;
 
         let Some(parse_result) = parse_result else {
             return Ok((Vec::new(), 0));
@@ -2541,10 +2549,10 @@ pub unsafe extern "C" fn session_db_read_session_messages(
             });
 
             *out_result = Box::into_raw(result_c);
-            SessionDbError::Success
+            FfiError::Success
         }
         Ok(Err(e)) => e,
-        Err(_) => SessionDbError::Unknown,
+        Err(_) => FfiError::Unknown,
     }
 }
 
@@ -2602,16 +2610,16 @@ pub struct CollectResultC {
 pub unsafe extern "C" fn session_db_collect(
     handle: *mut SessionDbHandle,
     out_result: *mut *mut CollectResultC,
-) -> SessionDbError {
+) -> FfiError {
     if handle.is_null() || out_result.is_null() {
-        return SessionDbError::NullPointer;
+        return FfiError::NullPointer;
     }
 
     let handle = &*handle;
 
     // 检查是否为 Writer
     if !handle.db.is_writer() {
-        return SessionDbError::PermissionDenied;
+        return FfiError::PermissionDenied;
     }
 
     let result = panic::catch_unwind(AssertUnwindSafe(|| {
@@ -2624,7 +2632,9 @@ pub unsafe extern "C" fn session_db_collect(
     match result {
         Ok(Ok(collect_result)) => {
             let first_error = if let Some(err) = collect_result.errors.first() {
-                CString::new(err.as_str()).map(|s| s.into_raw()).unwrap_or(std::ptr::null_mut())
+                CString::new(err.as_str())
+                    .map(|s| s.into_raw())
+                    .unwrap_or(std::ptr::null_mut())
             } else {
                 std::ptr::null_mut()
             };
@@ -2637,10 +2647,10 @@ pub unsafe extern "C" fn session_db_collect(
                 first_error,
             });
             *out_result = Box::into_raw(c_result);
-            SessionDbError::Success
+            FfiError::Success
         }
-        Ok(Err(_)) => SessionDbError::DatabaseError,
-        Err(_) => SessionDbError::Unknown,
+        Ok(Err(_)) => FfiError::DatabaseError,
+        Err(_) => FfiError::Unknown,
     }
 }
 
@@ -2653,21 +2663,21 @@ pub unsafe extern "C" fn session_db_collect_by_path(
     handle: *mut SessionDbHandle,
     path: *const c_char,
     out_result: *mut *mut CollectResultC,
-) -> SessionDbError {
+) -> FfiError {
     if handle.is_null() || path.is_null() || out_result.is_null() {
-        return SessionDbError::NullPointer;
+        return FfiError::NullPointer;
     }
 
     let handle = &*handle;
 
     // 检查是否为 Writer
     if !handle.db.is_writer() {
-        return SessionDbError::PermissionDenied;
+        return FfiError::PermissionDenied;
     }
 
     let path_str = match CStr::from_ptr(path).to_str() {
         Ok(s) => s,
-        Err(_) => return SessionDbError::InvalidUtf8,
+        Err(_) => return FfiError::InvalidUtf8,
     };
 
     let result = panic::catch_unwind(AssertUnwindSafe(|| {
@@ -2680,7 +2690,9 @@ pub unsafe extern "C" fn session_db_collect_by_path(
     match result {
         Ok(Ok(collect_result)) => {
             let first_error = if let Some(err) = collect_result.errors.first() {
-                CString::new(err.as_str()).map(|s| s.into_raw()).unwrap_or(std::ptr::null_mut())
+                CString::new(err.as_str())
+                    .map(|s| s.into_raw())
+                    .unwrap_or(std::ptr::null_mut())
             } else {
                 std::ptr::null_mut()
             };
@@ -2693,10 +2705,10 @@ pub unsafe extern "C" fn session_db_collect_by_path(
                 first_error,
             });
             *out_result = Box::into_raw(c_result);
-            SessionDbError::Success
+            FfiError::Success
         }
-        Ok(Err(_)) => SessionDbError::DatabaseError,
-        Err(_) => SessionDbError::Unknown,
+        Ok(Err(_)) => FfiError::DatabaseError,
+        Err(_) => FfiError::Unknown,
     }
 }
 

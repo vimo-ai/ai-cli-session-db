@@ -70,6 +70,22 @@ CREATE INDEX IF NOT EXISTS idx_messages_type ON messages(type);
 CREATE INDEX IF NOT EXISTS idx_messages_vector_indexed ON messages(vector_indexed);
 CREATE INDEX IF NOT EXISTS idx_messages_approval_status ON messages(approval_status) WHERE approval_status IS NOT NULL;
 CREATE INDEX IF NOT EXISTS idx_messages_approval_pending ON messages(session_id, approval_status) WHERE approval_status = 'pending';
+
+-- Talks 表 (Compact 摘要)
+CREATE TABLE IF NOT EXISTS talks (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    session_id TEXT NOT NULL,
+    talk_id TEXT NOT NULL,          -- Talk 唯一标识
+    summary_l2 TEXT NOT NULL,       -- L2 摘要（每个 Talk 的摘要）
+    summary_l3 TEXT,                -- L3 摘要（Session 级别汇总）
+    created_at INTEGER NOT NULL DEFAULT (strftime('%s', 'now') * 1000),
+    updated_at INTEGER NOT NULL DEFAULT (strftime('%s', 'now') * 1000),
+    UNIQUE(session_id, talk_id),
+    FOREIGN KEY (session_id) REFERENCES sessions(session_id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_talks_session ON talks(session_id);
+CREATE INDEX IF NOT EXISTS idx_talks_talk_id ON talks(talk_id);
 "#;
 
 /// FTS5 全文搜索 Schema (索引 content_full)
