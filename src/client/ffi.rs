@@ -84,11 +84,13 @@ pub struct AgentClientHandle {
 /// # Safety
 /// - `component` 必须是有效的 UTF-8 C 字符串
 /// - `data_dir` 可为 null（使用默认 ~/.vimo）
+/// - `agent_source_dir` 可为 null（Agent 源目录，用于首次部署）
 /// - `out_handle` 不能为 null
 #[no_mangle]
 pub unsafe extern "C" fn agent_client_create(
     component: *const c_char,
     data_dir: *const c_char,
+    agent_source_dir: *const c_char,
     out_handle: *mut *mut AgentClientHandle,
 ) -> FfiError {
     if component.is_null() || out_handle.is_null() {
@@ -109,10 +111,22 @@ pub unsafe extern "C" fn agent_client_create(
         }
     };
 
+    let agent_source_dir = if agent_source_dir.is_null() {
+        None
+    } else {
+        match CStr::from_ptr(agent_source_dir).to_str() {
+            Ok(s) => Some(PathBuf::from(s)),
+            Err(_) => return FfiError::InvalidUtf8,
+        }
+    };
+
     // 创建配置
     let mut config = ClientConfig::new(&component);
     if let Some(dir) = data_dir {
         config.data_dir = dir;
+    }
+    if let Some(dir) = agent_source_dir {
+        config.agent_source_dir = Some(dir);
     }
 
     // 创建 tokio runtime

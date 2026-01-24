@@ -29,6 +29,8 @@ pub struct ClientConfig {
     pub retry_interval_ms: u64,
     /// Agent 二进制路径覆盖（优先于默认路径）
     pub agent_binary_override: Option<PathBuf>,
+    /// Agent 源目录（用于首次部署，如 plugin bundle 的 Lib 目录）
+    pub agent_source_dir: Option<PathBuf>,
 }
 
 impl Default for ClientConfig {
@@ -44,6 +46,7 @@ impl Default for ClientConfig {
             connect_retries: 3,
             retry_interval_ms: 500,
             agent_binary_override: None,
+            agent_source_dir: None,
         }
     }
 }
@@ -60,6 +63,12 @@ impl ClientConfig {
     /// 设置 Agent 二进制路径
     pub fn with_agent_binary(mut self, path: PathBuf) -> Self {
         self.agent_binary_override = Some(path);
+        self
+    }
+
+    /// 设置 Agent 源目录（用于首次部署）
+    pub fn with_agent_source_dir(mut self, path: PathBuf) -> Self {
+        self.agent_source_dir = Some(path);
         self
     }
 
@@ -122,7 +131,16 @@ impl ClientConfig {
 
     /// 查找 Agent 源二进制（用于自动部署）
     fn find_agent_source(&self) -> Option<PathBuf> {
-        // Cargo target 目录（开发阶段）
+        // 1. 优先从配置的 agent_source_dir 查找（plugin bundle 等场景）
+        if let Some(ref source_dir) = self.agent_source_dir {
+            let path = source_dir.join("vimo-agent");
+            if path.exists() {
+                tracing::debug!("从 agent_source_dir 找到 Agent: {:?}", path);
+                return Some(path);
+            }
+        }
+
+        // 2. Cargo target 目录（开发阶段）
         for profile in ["release", "debug"] {
             // 相对于当前目录查找
             let cargo_path = PathBuf::from(format!("target/{}/vimo-agent", profile));
@@ -143,7 +161,7 @@ impl ClientConfig {
             }
         }
 
-        // App bundle（生产环境）
+        // 3. App bundle（生产环境）
         // ETerm.app/Contents/MacOS/vimo-agent
         if let Ok(exe_path) = std::env::current_exe() {
             if let Some(macos_dir) = exe_path.parent() {

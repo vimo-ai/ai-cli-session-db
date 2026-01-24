@@ -736,10 +736,12 @@ void session_db_free_collect_result(struct CollectResultC *result);
  * # Safety
  * - `component` 必须是有效的 UTF-8 C 字符串
  * - `data_dir` 可为 null（使用默认 ~/.vimo）
+ * - `agent_source_dir` 可为 null（Agent 源目录，用于首次部署）
  * - `out_handle` 不能为 null
  */
 enum FfiError agent_client_create(const char *component,
                                   const char *data_dir,
+                                  const char *agent_source_dir,
                                   struct AgentClientHandle **out_handle);
 
 /**
