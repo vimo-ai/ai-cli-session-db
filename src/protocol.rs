@@ -133,6 +133,7 @@ pub enum EventType {
 /// 审批状态
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum ApprovalStatus {
+    Pending,
     Approved,
     Rejected,
     Timeout,

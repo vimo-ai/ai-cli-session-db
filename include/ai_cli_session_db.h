@@ -70,20 +70,6 @@ typedef struct AgentClientHandle AgentClientHandle;
 typedef struct SessionDbHandle SessionDbHandle;
 
 /**
- * 采集结果（FFI 版本）
- */
-typedef struct CollectResultC {
-    uintptr_t projects_scanned;
-    uintptr_t sessions_scanned;
-    uintptr_t messages_inserted;
-    uintptr_t error_count;
-    /**
-     * 第一个错误信息（如果有）
-     */
-    char *first_error;
-} CollectResultC;
-
-/**
  * Project C 结构体
  */
 typedef struct Project {
@@ -279,6 +265,20 @@ typedef struct MessagesResultC {
 } MessagesResultC;
 
 /**
+ * 采集结果（FFI 版本）
+ */
+typedef struct CollectResultC {
+    uintptr_t projects_scanned;
+    uintptr_t sessions_scanned;
+    uintptr_t messages_inserted;
+    uintptr_t error_count;
+    /**
+     * 第一个错误信息（如果有）
+     */
+    char *first_error;
+} CollectResultC;
+
+/**
  * 推送回调函数类型
  *
  * - `event_type`: 事件类型
@@ -304,66 +304,6 @@ enum FfiError session_db_connect(const char *path, struct SessionDbHandle **out_
  * `handle` 必须是 `session_db_connect` 返回的有效句柄
  */
 void session_db_close(struct SessionDbHandle *handle);
-
-/**
- * 注册为 Writer
- *
- * # Safety
- * `handle` 必须是有效句柄
- */
-enum FfiError session_db_register_writer(struct SessionDbHandle *handle,
-                                         int32_t writer_type,
-                                         int32_t *out_role);
-
-/**
- * 心跳
- *
- * # Safety
- * `handle` 必须是有效句柄
- */
-enum FfiError session_db_heartbeat(struct SessionDbHandle *handle);
-
-/**
- * 释放 Writer
- *
- * # Safety
- * `handle` 必须是有效句柄
- */
-enum FfiError session_db_release_writer(struct SessionDbHandle *handle);
-
-/**
- * 检查 Writer 健康状态
- *
- * # Safety
- * `handle` 必须是有效句柄
- * `out_health` 输出健康状态: 0=Alive, 1=Timeout, 2=Released
- */
-enum FfiError session_db_check_writer_health(const struct SessionDbHandle *handle,
-                                             int32_t *out_health);
-
-/**
- * 尝试接管 Writer (Reader 在检测到超时后调用)
- *
- * # Safety
- * `handle` 必须是有效句柄
- * `out_taken` 输出是否接管成功: 1=成功, 0=失败
- */
-enum FfiError session_db_try_takeover(struct SessionDbHandle *handle, int32_t *out_taken);
-
-/**
- * 注册为 Writer 并在成为 Writer 时自动触发全量采集
- *
- * 此接口统一了"成为 Writer 时触发采集"的逻辑，供所有组件使用。
- *
- * # Safety
- * `handle` 必须是有效句柄
- * `out_role` 输出角色: 0=Writer, 1=Reader
- * `out_result` 如果不为 null，输出采集结果（仅当成为 Writer 时有值）
- */
-enum FfiError session_db_register_writer_and_collect(struct SessionDbHandle *handle,
-                                                     int32_t writer_type,
-                                                     int32_t *out_role,
-                                                     struct CollectResultC **out_result);
 
 /**
  * 获取统计信息
@@ -561,26 +501,6 @@ enum FfiError session_db_search_fts_with_options(const struct SessionDbHandle *h
                                                  int64_t project_id,
                                                  enum SearchOrderByC order_by,
                                                  struct SearchResultArray **out_array);
-
-/**
- * 通过 tool_call_id 更新审批状态
- *
- * # 参数
- * - `handle`: 数据库句柄
- * - `tool_call_id`: 工具调用 ID
- * - `status`: 审批状态 (0=Pending, 1=Approved, 2=Rejected, 3=Timeout)
- * - `resolved_at`: 审批解决时间戳（毫秒，pending 状态时为 0）
- * - `out_updated`: 输出更新的行数
- *
- * # Safety
- * - `handle` 必须是有效句柄
- * - `tool_call_id` 必须是有效的 UTF-8 C 字符串
- */
-enum FfiError session_db_update_approval_status_by_tool_call_id(struct SessionDbHandle *handle,
-                                                                const char *tool_call_id,
-                                                                enum ApprovalStatusC status,
-                                                                int64_t resolved_at,
-                                                                uintptr_t *out_updated);
 
 /**
  * 释放 C 字符串
@@ -859,6 +779,18 @@ enum FfiError agent_client_subscribe(struct AgentClientHandle *handle,
  * - `path` 必须是有效的 UTF-8 C 字符串
  */
 enum FfiError agent_client_notify_file_change(struct AgentClientHandle *handle, const char *path);
+
+/**
+ * 写入审批结果
+ *
+ * # Safety
+ * - `handle` 必须是有效句柄
+ * - `tool_call_id` 必须是有效的 UTF-8 C 字符串
+ */
+enum FfiError agent_client_write_approve_result(struct AgentClientHandle *handle,
+                                                const char *tool_call_id,
+                                                enum ApprovalStatusC status,
+                                                int64_t resolved_at);
 
 /**
  * 设置推送回调

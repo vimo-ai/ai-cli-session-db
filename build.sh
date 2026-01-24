@@ -42,7 +42,7 @@ log_error() { echo -e "${RED}[$PROJECT_NAME]${NC} $*"; }
 # 编译（指定 target-dir 避免被 workspace 覆盖）
 log_info "Building FFI dylib..."
 cd "$SCRIPT_DIR"
-cargo build --release --features ffi,fts,coordination,client --target-dir "$SCRIPT_DIR/target"
+cargo build --release --features ffi,fts,client --target-dir "$SCRIPT_DIR/target"
 
 DYLIB="$SCRIPT_DIR/target/release/libai_cli_session_db.dylib"
 HEADER="$SCRIPT_DIR/include/ai_cli_session_db.h"

@@ -95,204 +95,6 @@ pub unsafe extern "C" fn session_db_close(handle: *mut SessionDbHandle) {
     }
 }
 
-/// 注册为 Writer
-///
-/// # Safety
-/// `handle` 必须是有效句柄
-#[cfg(feature = "coordination")]
-#[no_mangle]
-pub unsafe extern "C" fn session_db_register_writer(
-    handle: *mut SessionDbHandle,
-    writer_type: i32,
-    out_role: *mut i32,
-) -> FfiError {
-    use crate::coordination::{Role, WriterType};
-
-    if handle.is_null() || out_role.is_null() {
-        return FfiError::NullPointer;
-    }
-
-    let handle = &mut *handle;
-    let writer_type = match writer_type {
-        0 => WriterType::MemexDaemon,
-        1 => WriterType::VlaudeDaemon,
-        2 => WriterType::MemexKit,
-        3 => WriterType::VlaudeKit,
-        _ => return FfiError::Unknown,
-    };
-
-    match handle.db.register_writer(writer_type) {
-        Ok(role) => {
-            *out_role = match role {
-                Role::Writer => 0,
-                Role::Reader => 1,
-            };
-            FfiError::Success
-        }
-        Err(_) => FfiError::CoordinationError,
-    }
-}
-
-/// 心跳
-///
-/// # Safety
-/// `handle` 必须是有效句柄
-#[cfg(feature = "coordination")]
-#[no_mangle]
-pub unsafe extern "C" fn session_db_heartbeat(handle: *mut SessionDbHandle) -> FfiError {
-    if handle.is_null() {
-        return FfiError::NullPointer;
-    }
-
-    let handle = &*handle;
-    match handle.db.heartbeat() {
-        Ok(_) => FfiError::Success,
-        Err(_) => FfiError::CoordinationError,
-    }
-}
-
-/// 释放 Writer
-///
-/// # Safety
-/// `handle` 必须是有效句柄
-#[cfg(feature = "coordination")]
-#[no_mangle]
-pub unsafe extern "C" fn session_db_release_writer(handle: *mut SessionDbHandle) -> FfiError {
-    if handle.is_null() {
-        return FfiError::NullPointer;
-    }
-
-    let handle = &*handle;
-    match handle.db.release_writer() {
-        Ok(_) => FfiError::Success,
-        Err(_) => FfiError::CoordinationError,
-    }
-}
-
-/// 检查 Writer 健康状态
-///
-/// # Safety
-/// `handle` 必须是有效句柄
-/// `out_health` 输出健康状态: 0=Alive, 1=Timeout, 2=Released
-#[cfg(feature = "coordination")]
-#[no_mangle]
-pub unsafe extern "C" fn session_db_check_writer_health(
-    handle: *const SessionDbHandle,
-    out_health: *mut i32,
-) -> FfiError {
-    use crate::coordination::WriterHealth;
-
-    if handle.is_null() || out_health.is_null() {
-        return FfiError::NullPointer;
-    }
-
-    let handle = &*handle;
-    match handle.db.check_writer_health() {
-        Ok(health) => {
-            *out_health = match health {
-                WriterHealth::Alive => 0,
-                WriterHealth::Timeout => 1,
-                WriterHealth::Released => 2,
-            };
-            FfiError::Success
-        }
-        Err(_) => FfiError::CoordinationError,
-    }
-}
-
-/// 尝试接管 Writer (Reader 在检测到超时后调用)
-///
-/// # Safety
-/// `handle` 必须是有效句柄
-/// `out_taken` 输出是否接管成功: 1=成功, 0=失败
-#[cfg(feature = "coordination")]
-#[no_mangle]
-pub unsafe extern "C" fn session_db_try_takeover(
-    handle: *mut SessionDbHandle,
-    out_taken: *mut i32,
-) -> FfiError {
-    if handle.is_null() || out_taken.is_null() {
-        return FfiError::NullPointer;
-    }
-
-    let handle = &mut *handle;
-    match handle.db.try_takeover() {
-        Ok(taken) => {
-            *out_taken = if taken { 1 } else { 0 };
-            FfiError::Success
-        }
-        Err(_) => FfiError::CoordinationError,
-    }
-}
-
-/// 注册为 Writer 并在成为 Writer 时自动触发全量采集
-///
-/// 此接口统一了"成为 Writer 时触发采集"的逻辑，供所有组件使用。
-///
-/// # Safety
-/// `handle` 必须是有效句柄
-/// `out_role` 输出角色: 0=Writer, 1=Reader
-/// `out_result` 如果不为 null，输出采集结果（仅当成为 Writer 时有值）
-#[cfg(feature = "coordination")]
-#[no_mangle]
-pub unsafe extern "C" fn session_db_register_writer_and_collect(
-    handle: *mut SessionDbHandle,
-    writer_type: i32,
-    out_role: *mut i32,
-    out_result: *mut *mut CollectResultC,
-) -> FfiError {
-    use crate::coordination::{Role, WriterType};
-
-    if handle.is_null() || out_role.is_null() {
-        return FfiError::NullPointer;
-    }
-
-    let handle = &mut *handle;
-    let writer_type = match writer_type {
-        0 => WriterType::MemexDaemon,
-        1 => WriterType::VlaudeDaemon,
-        2 => WriterType::MemexKit,
-        3 => WriterType::VlaudeKit,
-        _ => return FfiError::Unknown,
-    };
-
-    match handle.db.register_writer_and_collect(writer_type) {
-        Ok((role, collect_result)) => {
-            *out_role = match role {
-                Role::Writer => 0,
-                Role::Reader => 1,
-            };
-
-            // 如果提供了 out_result 指针且有采集结果，填充结果
-            if !out_result.is_null() {
-                if let Some(result) = collect_result {
-                    let first_error = if result.errors.is_empty() {
-                        std::ptr::null_mut()
-                    } else {
-                        CString::new(result.errors.join("; "))
-                            .map(|s| s.into_raw())
-                            .unwrap_or(std::ptr::null_mut())
-                    };
-
-                    let c_result = Box::new(CollectResultC {
-                        projects_scanned: result.projects_scanned,
-                        sessions_scanned: result.sessions_scanned,
-                        messages_inserted: result.messages_inserted,
-                        error_count: result.errors.len(),
-                        first_error,
-                    });
-                    *out_result = Box::into_raw(c_result);
-                } else {
-                    *out_result = std::ptr::null_mut();
-                }
-            }
-
-            FfiError::Success
-        }
-        Err(_) => FfiError::CoordinationError,
-    }
-}
-
 /// 获取统计信息
 ///
 /// # Safety
@@ -1401,58 +1203,15 @@ impl From<ApprovalStatusC> for crate::types::ApprovalStatus {
     }
 }
 
-/// 通过 tool_call_id 更新审批状态
-///
-/// # 参数
-/// - `handle`: 数据库句柄
-/// - `tool_call_id`: 工具调用 ID
-/// - `status`: 审批状态 (0=Pending, 1=Approved, 2=Rejected, 3=Timeout)
-/// - `resolved_at`: 审批解决时间戳（毫秒，pending 状态时为 0）
-/// - `out_updated`: 输出更新的行数
-///
-/// # Safety
-/// - `handle` 必须是有效句柄
-/// - `tool_call_id` 必须是有效的 UTF-8 C 字符串
-#[no_mangle]
-pub unsafe extern "C" fn session_db_update_approval_status_by_tool_call_id(
-    handle: *mut SessionDbHandle,
-    tool_call_id: *const c_char,
-    status: ApprovalStatusC,
-    resolved_at: i64,
-    out_updated: *mut usize,
-) -> FfiError {
-    if handle.is_null() || tool_call_id.is_null() {
-        return FfiError::NullPointer;
-    }
-
-    let result = panic::catch_unwind(AssertUnwindSafe(|| {
-        let handle = &*handle;
-        let tool_call_id_str = match CStr::from_ptr(tool_call_id).to_str() {
-            Ok(s) => s,
-            Err(_) => return Err(FfiError::InvalidUtf8),
-        };
-
-        let rust_status: crate::types::ApprovalStatus = status.into();
-
-        match handle.db.update_approval_status_by_tool_call_id(
-            tool_call_id_str,
-            rust_status,
-            resolved_at,
-        ) {
-            Ok(count) => Ok(count),
-            Err(e) => Err(map_error(e)),
+#[cfg(feature = "client")]
+impl From<ApprovalStatusC> for crate::protocol::ApprovalStatus {
+    fn from(status: ApprovalStatusC) -> Self {
+        match status {
+            ApprovalStatusC::Pending => crate::protocol::ApprovalStatus::Pending,
+            ApprovalStatusC::Approved => crate::protocol::ApprovalStatus::Approved,
+            ApprovalStatusC::Rejected => crate::protocol::ApprovalStatus::Rejected,
+            ApprovalStatusC::Timeout => crate::protocol::ApprovalStatus::Timeout,
         }
-    }));
-
-    match result {
-        Ok(Ok(count)) => {
-            if !out_updated.is_null() {
-                *out_updated = count;
-            }
-            FfiError::Success
-        }
-        Ok(Err(e)) => e,
-        Err(_) => FfiError::Unknown,
     }
 }
 
@@ -2617,11 +2376,6 @@ pub unsafe extern "C" fn session_db_collect(
 
     let handle = &*handle;
 
-    // 检查是否为 Writer
-    if !handle.db.is_writer() {
-        return FfiError::PermissionDenied;
-    }
-
     let result = panic::catch_unwind(AssertUnwindSafe(|| {
         use crate::collector::Collector;
 
@@ -2669,11 +2423,6 @@ pub unsafe extern "C" fn session_db_collect_by_path(
     }
 
     let handle = &*handle;
-
-    // 检查是否为 Writer
-    if !handle.db.is_writer() {
-        return FfiError::PermissionDenied;
-    }
 
     let path_str = match CStr::from_ptr(path).to_str() {
         Ok(s) => s,

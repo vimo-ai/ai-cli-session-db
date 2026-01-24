@@ -36,7 +36,7 @@ jobs:
 
       - name: Build release
         run: |
-          cargo build --release --features ffi,fts,coordination
+          cargo build --release --features ffi,fts,client
 
       - name: Get dylib info
         id: dylib

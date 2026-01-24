@@ -41,7 +41,7 @@ else
 
     # 编译 FFI
     log_info "Building FFI..."
-    cargo build --release --features ffi,fts,coordination
+    cargo build --release --features ffi,fts,client
 
     # 复制到 VlaudeKit
     VLAUDE_KIT="$ETERM_ROOT/english/Plugins/VlaudeKit/Libs/SharedDB"

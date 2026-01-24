@@ -2,7 +2,7 @@
 name = "ai-cli-session-db"
 version = "0.0.1-beta.1"
 edition = "2021"
-description = "Shared database library for Claude session management with writer coordination"
+description = "Shared database library for AI CLI session management with Agent architecture"
 license = "MIT"
 
 [lib]
@@ -10,12 +10,11 @@ name = "ai_cli_session_db"
 crate-type = ["rlib", "cdylib"]
 
 [features]
-default = ["writer", "reader", "search", "coordination"]
+default = ["writer", "reader", "search"]
 writer = []           # 写入能力
 reader = []           # 只读能力
 search = ["fts"]      # 搜索能力
 fts = []              # FTS5 支持
-coordination = []     # Writer 协调逻辑（旧，将废弃）
 ffi = []              # C FFI 导出 (Swift 绑定用)
 agent = ["writer", "search", "dep:notify", "dep:notify-debouncer-mini"]  # Agent 模式（唯一 Writer + 文件监听 + 事件推送）
 client = []           # Agent Client（供组件使用）

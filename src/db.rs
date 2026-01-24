@@ -1,6 +1,5 @@
 //! 数据库连接和操作
 
-use crate::collector::CollectResult;
 use crate::config::{ConnectionMode, DbConfig};
 use crate::error::{Error, Result};
 use crate::migrations;
@@ -12,17 +11,11 @@ use rusqlite::{Connection, OptionalExtension, params};
 use std::path::Path;
 use std::sync::Arc;
 
-#[cfg(feature = "coordination")]
-use crate::coordination::{CoordinationConfig, Coordinator, Role, WriterHealth, WriterType};
-
 /// 数据库连接
 pub struct SessionDB {
     pub(crate) conn: Arc<Mutex<Connection>>,
     #[allow(dead_code)]
     config: DbConfig,
-
-    #[cfg(feature = "coordination")]
-    coordinator: Option<Coordinator>,
 }
 
 impl SessionDB {
@@ -61,8 +54,7 @@ impl SessionDB {
 
         // 初始化 schema（创建表和索引）
         let fts = cfg!(feature = "fts");
-        let coordination = cfg!(feature = "coordination");
-        let full_schema = schema::full_schema(fts, coordination);
+        let full_schema = schema::full_schema(fts);
         conn.execute_batch(&full_schema)?;
 
         tracing::info!("数据库已连接: {:?}", path);
@@ -70,8 +62,6 @@ impl SessionDB {
         Ok(Self {
             conn: Arc::new(Mutex::new(conn)),
             config: config.clone(),
-            #[cfg(feature = "coordination")]
-            coordinator: None,
         })
     }
 
@@ -79,175 +69,6 @@ impl SessionDB {
     #[doc(hidden)]
     pub fn connection(&self) -> &Arc<Mutex<Connection>> {
         &self.conn
-    }
-
-    // ==================== Writer 协调 ====================
-
-    #[cfg(feature = "coordination")]
-    /// 注册为 Writer，返回实际角色
-    pub fn register_writer(&mut self, writer_type: WriterType) -> Result<Role> {
-        let coordinator = Coordinator::new(writer_type, CoordinationConfig::default());
-        let conn = self.conn.lock();
-        let role = coordinator.try_register(&conn)?;
-        self.coordinator = Some(coordinator);
-        Ok(role)
-    }
-
-    #[cfg(feature = "coordination")]
-    /// 注册为 Writer 并在成为 Writer 时自动触发全量采集
-    ///
-    /// 此方法统一了"成为 Writer 时触发采集"的逻辑，供所有组件使用：
-    /// - VlaudeKit、MemexKit（ETerm 插件）
-    /// - memex daemon、vlaude daemon
-    ///
-    /// # Returns
-    /// - `Role`: 注册后的角色（Writer 或 Reader）
-    /// - `Option<CollectResult>`: 如果成为 Writer，返回采集结果；否则为 None
-    pub fn register_writer_and_collect(
-        &mut self,
-        writer_type: WriterType,
-    ) -> Result<(Role, Option<CollectResult>)> {
-        let role = self.register_writer(writer_type)?;
-
-        if role == Role::Writer {
-            tracing::info!("成为 Writer，触发全量采集...");
-            let collector = crate::collector::Collector::new(self);
-            match collector.collect_all() {
-                Ok(result) => {
-                    tracing::info!(
-                        "采集完成: {} sessions, {} 条新消息",
-                        result.sessions_scanned,
-                        result.messages_inserted
-                    );
-                    Ok((role, Some(result)))
-                }
-                Err(e) => {
-                    tracing::warn!("采集失败（不影响 Writer 注册）: {}", e);
-                    // 采集失败不影响 Writer 注册，返回空的采集结果
-                    Ok((role, None))
-                }
-            }
-        } else {
-            Ok((role, None))
-        }
-    }
-
-    #[cfg(feature = "coordination")]
-    /// 更新心跳 (Writer 定期调用)
-    pub fn heartbeat(&self) -> Result<()> {
-        let coordinator = self
-            .coordinator
-            .as_ref()
-            .ok_or_else(|| Error::Coordination("未注册为 Writer".into()))?;
-        let conn = self.conn.lock();
-        coordinator.heartbeat(&conn)
-    }
-
-    #[cfg(feature = "coordination")]
-    /// 释放 Writer (正常退出时调用)
-    pub fn release_writer(&self) -> Result<()> {
-        if let Some(ref coordinator) = self.coordinator {
-            let conn = self.conn.lock();
-            coordinator.release(&conn)?;
-        }
-        Ok(())
-    }
-
-    #[cfg(feature = "coordination")]
-    /// 检查 Writer 健康状态 (Reader 调用)
-    pub fn check_writer_health(&self) -> Result<WriterHealth> {
-        let coordinator = self
-            .coordinator
-            .as_ref()
-            .ok_or_else(|| Error::Coordination("未注册".into()))?;
-        let conn = self.conn.lock();
-        coordinator.check_writer_health(&conn)
-    }
-
-    #[cfg(feature = "coordination")]
-    /// 尝试接管 Writer (Reader 在检测到超时后调用)
-    pub fn try_takeover(&mut self) -> Result<bool> {
-        let coordinator = self
-            .coordinator
-            .as_ref()
-            .ok_or_else(|| Error::Coordination("未注册".into()))?;
-        let conn = self.conn.lock();
-        coordinator.try_takeover(&conn)
-    }
-
-    #[cfg(feature = "coordination")]
-    /// 尝试接管 Writer 并在成功时自动触发全量采集
-    ///
-    /// 此方法统一了"接管 Writer 时触发采集"的逻辑。
-    ///
-    /// # Returns
-    /// - `bool`: 是否成功接管
-    /// - `Option<CollectResult>`: 如果成功接管，返回采集结果；否则为 None
-    pub fn try_takeover_and_collect(&mut self) -> Result<(bool, Option<CollectResult>)> {
-        let taken = self.try_takeover()?;
-
-        if taken {
-            tracing::info!("接管 Writer 成功，触发全量采集...");
-            let collector = crate::collector::Collector::new(self);
-            match collector.collect_all() {
-                Ok(result) => {
-                    tracing::info!(
-                        "采集完成: {} sessions, {} 条新消息",
-                        result.sessions_scanned,
-                        result.messages_inserted
-                    );
-                    Ok((taken, Some(result)))
-                }
-                Err(e) => {
-                    tracing::warn!("采集失败（不影响接管）: {}", e);
-                    Ok((taken, None))
-                }
-            }
-        } else {
-            Ok((taken, None))
-        }
-    }
-
-    #[cfg(feature = "coordination")]
-    /// 监听角色变化
-    pub fn watch_role_change(&self) -> Option<tokio::sync::watch::Receiver<Role>> {
-        self.coordinator.as_ref().map(|c| c.watch_role())
-    }
-
-    #[cfg(feature = "coordination")]
-    /// 获取当前角色
-    pub fn current_role(&self) -> Option<Role> {
-        self.coordinator.as_ref().map(|c| c.current_role())
-    }
-
-    #[cfg(feature = "coordination")]
-    /// 检查是否为 Writer
-    pub fn is_writer(&self) -> bool {
-        self.coordinator
-            .as_ref()
-            .map(|c| c.current_role() == Role::Writer)
-            .unwrap_or(false)
-    }
-
-    /// 非 coordination 模式下始终返回 true（允许写入）
-    #[cfg(not(feature = "coordination"))]
-    pub fn is_writer(&self) -> bool {
-        true
-    }
-
-    #[cfg(feature = "coordination")]
-    /// 检查是否为 Writer 角色，如果不是则返回 PermissionDenied 错误
-    ///
-    /// 所有写入方法应该在开始时调用此方法
-    fn require_writer(&self) -> Result<()> {
-        if let Some(ref coordinator) = self.coordinator {
-            let current_role = coordinator.current_role();
-            if current_role != Role::Writer {
-                return Err(Error::PermissionDenied);
-            }
-        }
-        // 如果没有启用协调机制（coordinator 为 None），则允许写入
-        Ok(())
     }
 
     // ==================== Project 操作 ====================
@@ -265,9 +86,6 @@ impl SessionDB {
         source: &str,
         encoded_dir_name: Option<&str>,
     ) -> Result<i64> {
-        #[cfg(feature = "coordination")]
-        self.require_writer()?;
-
         let conn = self.conn.lock();
 
         // 先查找
@@ -416,9 +234,6 @@ impl SessionDB {
 
     /// 创建或更新 Session (简化版，仅 session_id 和 project_id)
     pub fn upsert_session(&self, session_id: &str, project_id: i64) -> Result<()> {
-        #[cfg(feature = "coordination")]
-        self.require_writer()?;
-
         let conn = self.conn.lock();
         let now = current_time_ms();
 
@@ -437,9 +252,6 @@ impl SessionDB {
 
     /// 创建或更新 Session (完整版，支持所有元数据字段)
     pub fn upsert_session_full(&self, input: &SessionInput) -> Result<()> {
-        #[cfg(feature = "coordination")]
-        self.require_writer()?;
-
         let conn = self.conn.lock();
         let now = current_time_ms();
 
@@ -758,9 +570,6 @@ impl SessionDB {
 
     /// 更新 session 的最后消息时间
     pub fn update_session_last_message(&self, session_id: &str, timestamp: i64) -> Result<()> {
-        #[cfg(feature = "coordination")]
-        self.require_writer()?;
-
         let conn = self.conn.lock();
         let now = current_time_ms();
 
@@ -777,9 +586,6 @@ impl SessionDB {
     /// 批量写入 Messages (自动去重)
     /// 返回实际插入的数量
     pub fn insert_messages(&self, session_id: &str, messages: &[MessageInput]) -> Result<usize> {
-        #[cfg(feature = "coordination")]
-        self.require_writer()?;
-
         let mut conn = self.conn.lock();
         let tx = conn.transaction()?;
 
@@ -1038,9 +844,6 @@ impl SessionDB {
             message_ids
         );
 
-        #[cfg(feature = "coordination")]
-        self.require_writer()?;
-
         if message_ids.is_empty() {
             println!("🔍 [DEBUG] No message IDs provided, returning 0");
             return Ok(0);
@@ -1085,9 +888,6 @@ impl SessionDB {
     /// 标记消息向量索引失败
     /// vector_indexed = -1 表示失败
     pub fn mark_message_index_failed(&self, message_id: i64) -> Result<()> {
-        #[cfg(feature = "coordination")]
-        self.require_writer()?;
-
         let conn = self.conn.lock();
         conn.execute(
             "UPDATE messages SET vector_indexed = -1 WHERE id = ?1",
@@ -1098,9 +898,6 @@ impl SessionDB {
 
     /// 批量标记消息向量索引失败
     pub fn mark_messages_index_failed(&self, message_ids: &[i64]) -> Result<usize> {
-        #[cfg(feature = "coordination")]
-        self.require_writer()?;
-
         if message_ids.is_empty() {
             return Ok(0);
         }
@@ -1186,9 +983,6 @@ impl SessionDB {
 
     /// 重置失败的索引状态（将 -1 改为 0，可重新索引）
     pub fn reset_failed_indexed_messages(&self) -> Result<usize> {
-        #[cfg(feature = "coordination")]
-        self.require_writer()?;
-
         let conn = self.conn.lock();
         let count = conn.execute(
             "UPDATE messages SET vector_indexed = 0 WHERE vector_indexed = -1",
@@ -1267,9 +1061,6 @@ impl SessionDB {
         summary_l2: &str,
         summary_l3: Option<&str>,
     ) -> Result<()> {
-        #[cfg(feature = "coordination")]
-        self.require_writer()?;
-
         let conn = self.conn.lock();
         let now = current_time_ms();
 
@@ -1377,9 +1168,6 @@ impl SessionDB {
         status: crate::types::ApprovalStatus,
         resolved_at: i64,
     ) -> Result<usize> {
-        #[cfg(feature = "coordination")]
-        self.require_writer()?;
-
         let conn = self.conn.lock();
         let count = conn.execute(
             r#"
@@ -1405,9 +1193,6 @@ impl SessionDB {
         status: crate::types::ApprovalStatus,
         resolved_at: i64,
     ) -> Result<usize> {
-        #[cfg(feature = "coordination")]
-        self.require_writer()?;
-
         let conn = self.conn.lock();
         let count = conn.execute(
             r#"
@@ -1430,9 +1215,6 @@ impl SessionDB {
         status: crate::types::ApprovalStatus,
         resolved_at: i64,
     ) -> Result<usize> {
-        #[cfg(feature = "coordination")]
-        self.require_writer()?;
-
         if uuids.is_empty() {
             return Ok(0);
         }
@@ -1522,9 +1304,6 @@ impl SessionDB {
         from_project_id: i64,
         to_project_id: i64,
     ) -> Result<usize> {
-        #[cfg(feature = "coordination")]
-        self.require_writer()?;
-
         let conn = self.conn.lock();
         let count = conn.execute(
             "UPDATE sessions SET project_id = ?1 WHERE project_id = ?2",
@@ -1535,9 +1314,6 @@ impl SessionDB {
 
     /// 删除项目
     pub fn delete_project(&self, project_id: i64) -> Result<()> {
-        #[cfg(feature = "coordination")]
-        self.require_writer()?;
-
         let conn = self.conn.lock();
         conn.execute("DELETE FROM projects WHERE id = ?1", params![project_id])?;
         Ok(())
@@ -1546,9 +1322,6 @@ impl SessionDB {
     /// 去重项目 - 按 path 合并，保留 session 最多的记录
     /// 返回 (合并数量, 删除的项目 ID 列表)
     pub fn deduplicate_projects(&self) -> Result<(usize, Vec<i64>)> {
-        #[cfg(feature = "coordination")]
-        self.require_writer()?;
-
         let conn = self.conn.lock();
 
         // 找出所有重复的 path（有多条记录）
@@ -1730,13 +1503,3 @@ impl SessionDB {
     }
 }
 
-impl Drop for SessionDB {
-    fn drop(&mut self) {
-        #[cfg(feature = "coordination")]
-        {
-            if let Err(e) = self.release_writer() {
-                tracing::warn!("释放 Writer 失败: {}", e);
-            }
-        }
-    }
-}

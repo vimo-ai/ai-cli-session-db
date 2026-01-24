@@ -4,10 +4,10 @@
 //!
 //! # 核心功能
 //!
-//! - **Writer 协调**: 多组件共存时，只有一个负责写入
 //! - **数据读写**: Project/Session/Message 的 CRUD 操作
 //! - **全文搜索**: FTS5 支持
 //! - **增量扫描**: 基于时间戳的增量更新
+//! - **Agent 模式**: 唯一 Writer + 文件监听 + 事件推送
 //!
 //! # Feature Flags
 //!
@@ -15,32 +15,14 @@
 //! - `reader`: 只读能力
 //! - `search`: 搜索能力 (依赖 `fts`)
 //! - `fts`: FTS5 全文搜索
-//! - `coordination`: Writer 协调逻辑
 //! - `ffi`: C FFI 导出 (Swift 绑定用)
+//! - `agent`: Agent 模式（唯一 Writer + 文件监听 + 事件推送）
+//! - `client`: Agent Client（供组件使用）
 //!
-//! # 使用示例
+//! # 架构
 //!
-//! ```ignore
-//! use ai_cli_session_db::{SessionDB, DbConfig, WriterType};
-//!
-//! // 连接数据库
-//! let config = DbConfig::local("~/.memex/session.db");
-//! let db = SessionDB::connect(config)?;
-//!
-//! // 注册为 Writer
-//! let role = db.register_writer(WriterType::MemexDaemon)?;
-//!
-//! // 根据角色执行不同逻辑
-//! match role {
-//!     Role::Writer => {
-//!         // 扫描 JSONL，写入数据库
-//!         db.heartbeat()?;  // 定期心跳
-//!     }
-//!     Role::Reader => {
-//!         // 只读数据库
-//!     }
-//! }
-//! ```
+//! 所有写入操作统一通过 vimo-agent 处理，其他组件使用 AgentClient 进行通信。
+//! 这消除了多组件同时写入 DB 的冲突问题。
 
 pub mod config;
 pub mod db;
@@ -50,9 +32,6 @@ pub mod protocol;
 pub mod reader;
 pub mod schema;
 pub mod types;
-
-#[cfg(feature = "coordination")]
-pub mod coordination;
 
 #[cfg(feature = "writer")]
 pub mod writer;
@@ -83,9 +62,6 @@ pub use reader::{
     MessagesResult, Order, ProjectInfo, RawMessagesResult, SessionMetrics, SessionReader,
 };
 pub use types::*;
-
-#[cfg(feature = "coordination")]
-pub use coordination::{Role, WriterHealth, WriterType};
 
 #[cfg(feature = "writer")]
 pub use collector::{CollectResult, Collector};

@@ -172,6 +172,7 @@ impl Handler {
         );
 
         let db_status = match status {
+            crate::protocol::ApprovalStatus::Pending => crate::types::ApprovalStatus::Pending,
             crate::protocol::ApprovalStatus::Approved => crate::types::ApprovalStatus::Approved,
             crate::protocol::ApprovalStatus::Rejected => crate::types::ApprovalStatus::Rejected,
             crate::protocol::ApprovalStatus::Timeout => crate::types::ApprovalStatus::Timeout,

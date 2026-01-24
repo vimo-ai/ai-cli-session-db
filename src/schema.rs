@@ -114,29 +114,12 @@ CREATE TRIGGER IF NOT EXISTS messages_au AFTER UPDATE ON messages BEGIN
 END;
 "#;
 
-/// Writer 协调表 Schema
-pub const COORDINATION_SCHEMA_SQL: &str = r#"
--- Writer 注册表 (协调用)
-CREATE TABLE IF NOT EXISTS writer_registry (
-    id INTEGER PRIMARY KEY CHECK (id = 1),  -- 只能有一行
-    writer_type TEXT NOT NULL,
-    writer_id TEXT NOT NULL,      -- UUID，每次启动生成新的
-    priority INTEGER NOT NULL,
-    heartbeat INTEGER NOT NULL,   -- 毫秒时间戳
-    registered_at INTEGER NOT NULL
-);
-"#;
-
 /// 获取完整 Schema (根据 feature flags)
-pub fn full_schema(fts: bool, coordination: bool) -> String {
+pub fn full_schema(fts: bool) -> String {
     let mut sql = SCHEMA_SQL.to_string();
 
     if fts {
         sql.push_str(FTS_SCHEMA_SQL);
-    }
-
-    if coordination {
-        sql.push_str(COORDINATION_SCHEMA_SQL);
     }
 
     sql

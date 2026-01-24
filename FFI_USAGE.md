@@ -8,7 +8,7 @@ This library provides a C FFI interface for Swift integration in MemexKit and Vl
 
 ```bash
 # Build with FFI support
-cargo build --release --features ffi,fts,coordination
+cargo build --release --features ffi,fts,client
 
 # Output:
 # - Dynamic library: target/release/libai_cli_session_db.dylib (macOS)
@@ -209,21 +209,14 @@ typedef enum SessionDbError {
 - All FFI calls use `panic::catch_unwind` for safety
 - Safe for multi-threaded Swift/ObjC applications
 
-## Writer Coordination
+## Agent Architecture
+
+All write operations are handled by a single `vimo-agent` process. Components use `AgentClient` to communicate:
 
 ```swift
-// Register as writer
-var role: Int32 = 0
-let result = session_db_register_writer(handle, 2, &role) // 2 = MemexKit
-if result == Success {
-    print(role == 0 ? "Writer" : "Reader")
-}
-
-// Heartbeat (call periodically)
-session_db_heartbeat(handle)
-
-// Release (on app quit)
-session_db_release_writer(handle)
+// Use AgentClient for write operations
+agentClient.notifyFileChange("/path/to/session.jsonl")
+agentClient.writeApproveResult(toolCallId: "...", status: .approved, resolvedAt: timestamp)
 ```
 
 ## Features
@@ -232,11 +225,12 @@ Enable via Cargo features:
 
 - `ffi` - C FFI exports
 - `fts` - Full-text search
-- `coordination` - Writer coordination
+- `client` - Agent client (for communicating with vimo-agent)
 - `writer` - Write capabilities
 - `reader` - Read-only capabilities
+- `agent` - Agent mode (file watching, event pushing)
 
-Default features: `writer`, `reader`, `search`, `coordination`
+Default features: `writer`, `reader`, `search`
 
 ## Testing
 

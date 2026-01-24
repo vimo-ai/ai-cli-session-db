@@ -44,7 +44,7 @@ jobs:
           targets: aarch64-apple-darwin
 
       - name: Build release
-        run: cargo build --release --features ffi,fts,coordination
+        run: cargo build --release --features ffi,fts,client
 
       - name: Get dylib info
         id: dylib

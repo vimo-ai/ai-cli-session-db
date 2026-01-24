@@ -238,6 +238,29 @@ impl AgentClient {
         }
     }
 
+    /// 写入 Approve 结果
+    pub async fn write_approve_result(
+        &mut self,
+        tool_call_id: String,
+        status: crate::protocol::ApprovalStatus,
+        resolved_at: i64,
+    ) -> Result<()> {
+        let request = crate::protocol::Request::WriteApproveResult {
+            tool_call_id,
+            status,
+            resolved_at,
+        };
+        let response = self.request(&request).await?;
+
+        match response {
+            crate::protocol::Response::Ok => Ok(()),
+            crate::protocol::Response::Error { code, message } => {
+                Err(anyhow::anyhow!("WriteApproveResult failed: {} (code={})", message, code))
+            }
+            _ => Err(anyhow::anyhow!("Unexpected response")),
+        }
+    }
+
     /// 接收推送事件
     pub async fn recv_push(&mut self) -> Option<crate::protocol::Push> {
         let line = self.push_rx.recv().await?;

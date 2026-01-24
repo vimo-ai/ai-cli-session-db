@@ -13,7 +13,7 @@ use tokio::runtime::Runtime;
 use tokio::sync::mpsc;
 
 use super::{connect_or_start_agent, AgentClient, ClientConfig};
-use crate::ffi::FfiError;
+use crate::ffi::{ApprovalStatusC, FfiError};
 use crate::protocol::{EventType, Push};
 
 /// 事件类型（FFI 友好）
@@ -44,6 +44,7 @@ impl From<AgentEventType> for EventType {
         }
     }
 }
+
 
 /// 推送回调函数类型
 ///
@@ -372,6 +373,48 @@ pub unsafe extern "C" fn agent_client_notify_file_change(
         Ok(_) => FfiError::Success,
         Err(e) => {
             tracing::error!("通知文件变化失败: {}", e);
+            FfiError::RequestFailed
+        }
+    }
+}
+
+/// 写入审批结果
+///
+/// # Safety
+/// - `handle` 必须是有效句柄
+/// - `tool_call_id` 必须是有效的 UTF-8 C 字符串
+#[no_mangle]
+pub unsafe extern "C" fn agent_client_write_approve_result(
+    handle: *mut AgentClientHandle,
+    tool_call_id: *const c_char,
+    status: ApprovalStatusC,
+    resolved_at: i64,
+) -> FfiError {
+    if handle.is_null() || tool_call_id.is_null() {
+        return FfiError::NullPointer;
+    }
+
+    let tool_call_id = match CStr::from_ptr(tool_call_id).to_str() {
+        Ok(s) => s.to_string(),
+        Err(_) => return FfiError::InvalidUtf8,
+    };
+
+    let handle = &*handle;
+
+    if !handle.state.connected.load(Ordering::SeqCst) {
+        return FfiError::NotConnected;
+    }
+
+    let mut client_guard = handle.state.client.lock();
+    let client = match client_guard.as_mut() {
+        Some(c) => c,
+        None => return FfiError::NotConnected,
+    };
+
+    match handle.runtime.block_on(client.write_approve_result(tool_call_id, status.into(), resolved_at)) {
+        Ok(_) => FfiError::Success,
+        Err(e) => {
+            tracing::error!("写入审批结果失败: {}", e);
             FfiError::RequestFailed
         }
     }
