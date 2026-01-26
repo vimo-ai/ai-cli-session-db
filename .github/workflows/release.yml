@@ -127,16 +127,16 @@ jobs:
           body: |
             ## ai-cli-session-db v${{ steps.dylib.outputs.version }}
 
-            macOS arm64 发布包
+            macOS arm64 release package
 
-            ### 产物
+            ### Artifacts
 
-            | 文件 | 说明 | SHA256 |
-            |------|------|--------|
-            | `libai_cli_session_db.dylib` | FFI 动态库 | `${{ steps.dylib.outputs.sha256 }}` |
-            | `vimo-agent` | Agent 二进制 | `${{ steps.agent.outputs.sha256 }}` |
+            | File | Description | SHA256 |
+            |------|-------------|--------|
+            | `libai_cli_session_db.dylib` | FFI dynamic library | `${{ steps.dylib.outputs.sha256 }}` |
+            | `vimo-agent` | Agent binary | `${{ steps.agent.outputs.sha256 }}` |
 
-            ### 安装 dylib
+            ### Install dylib
 
             ```bash
             mkdir -p ~/.vimo/lib
@@ -144,7 +144,7 @@ jobs:
               https://github.com/${{ github.repository }}/releases/download/${{ github.ref_name }}/libai_cli_session_db.dylib
             ```
 
-            ### 安装 vimo-agent
+            ### Install vimo-agent
 
             ```bash
             mkdir -p ~/.vimo/bin
