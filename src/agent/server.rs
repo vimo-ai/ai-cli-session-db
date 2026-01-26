@@ -56,7 +56,7 @@ impl AgentConfig {
 
     /// 数据库路径
     pub fn db_path(&self) -> PathBuf {
-        self.data_dir.join("db").join("session.db")
+        self.data_dir.join("db").join("ai-cli-session.db")
     }
 }
 
@@ -122,6 +122,30 @@ impl Agent {
         fs::set_permissions(&socket_path, fs::Permissions::from_mode(0o600))?;
 
         tracing::info!("🚀 Agent 启动: {:?}", socket_path);
+
+        // 启动时执行全量扫描（mtime 剪枝会跳过未变化的文件）
+        {
+            let db = self.db.clone();
+            tokio::task::spawn_blocking(move || {
+                let collector = crate::Collector::new(&*db);
+                match collector.collect_all() {
+                    Ok(result) => {
+                        if result.messages_inserted > 0 {
+                            tracing::info!(
+                                "📊 启动扫描完成: {} 个会话, {} 条新消息",
+                                result.sessions_scanned,
+                                result.messages_inserted
+                            );
+                        }
+                    }
+                    Err(e) => {
+                        tracing::error!("启动扫描失败: {}", e);
+                    }
+                }
+            })
+            .await
+            .ok();
+        }
 
         // 启动文件监听
         self.watcher.clone().start().await?;

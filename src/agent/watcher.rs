@@ -134,21 +134,28 @@ impl FileWatcher {
     pub async fn trigger_collect(&self, path: &Path) -> Result<()> {
         let path_str = path.to_str().ok_or_else(|| {
             anyhow::anyhow!("无法转换路径: {:?}", path)
-        })?;
+        })?.to_string();
 
-        // 创建 Collector 并执行 Collection
-        let collector = Collector::new(&*self.db);
-        let result = collector.collect_by_path(path_str)?;
+        let path_clone = path.to_path_buf();
+
+        // 使用 spawn_blocking 避免阻塞 tokio runtime
+        let db = self.db.clone();
+        let result = tokio::task::spawn_blocking(move || {
+            let collector = Collector::new(&*db);
+            collector.collect_by_path(&path_str)
+        })
+        .await
+        .map_err(|e| anyhow::anyhow!("spawn_blocking failed: {}", e))??;
 
         if result.messages_inserted > 0 {
             tracing::debug!(
                 "📝 收集完成: {:?} → {} 条新消息",
-                path.file_name().unwrap_or_default(),
+                path_clone.file_name().unwrap_or_default(),
                 result.messages_inserted
             );
 
             // 提取 session_id
-            let session_id = path
+            let session_id = path_clone
                 .file_stem()
                 .and_then(|s| s.to_str())
                 .map(|s| s.to_string())
@@ -158,7 +165,7 @@ impl FileWatcher {
             self.broadcaster
                 .broadcast(Event::NewMessages {
                     session_id,
-                    path: path.to_path_buf(),
+                    path: path_clone,
                     count: result.messages_inserted,
                     message_ids: result.new_message_ids,
                 })
