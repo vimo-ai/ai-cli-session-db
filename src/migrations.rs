@@ -4,7 +4,7 @@ use rusqlite::{Connection, Result as SqliteResult};
 use tracing::{info, warn};
 
 /// 迁移版本
-const MIGRATION_VERSION: i64 = 1;
+const MIGRATION_VERSION: i64 = 2;
 
 /// 初始化迁移系统
 pub fn initialize_migrations(conn: &Connection) -> SqliteResult<()> {
@@ -128,6 +128,39 @@ fn migration_001_add_approval_fields(conn: &Connection) -> SqliteResult<()> {
     Ok(())
 }
 
+/// 迁移 2: 添加增量读取字段到 sessions 表
+fn migration_002_add_incremental_fields(conn: &Connection) -> SqliteResult<()> {
+    info!("开始执行迁移 002: 添加增量读取字段");
+
+    // 如果表不存在，跳过迁移
+    if !table_exists(conn, "sessions")? {
+        info!("sessions 表不存在，跳过迁移（将由 schema 创建完整表）");
+        return Ok(());
+    }
+
+    // 添加 file_offset 列
+    if !column_exists(conn, "sessions", "file_offset")? {
+        info!("添加 file_offset 列");
+        conn.execute(
+            "ALTER TABLE sessions ADD COLUMN file_offset INTEGER DEFAULT 0",
+            [],
+        )?;
+    } else {
+        info!("file_offset 列已存在，跳过");
+    }
+
+    // 添加 file_inode 列
+    if !column_exists(conn, "sessions", "file_inode")? {
+        info!("添加 file_inode 列");
+        conn.execute("ALTER TABLE sessions ADD COLUMN file_inode INTEGER", [])?;
+    } else {
+        info!("file_inode 列已存在，跳过");
+    }
+
+    info!("迁移 002 完成");
+    Ok(())
+}
+
 /// 执行所有待应用的迁移
 pub fn run_migrations(conn: &Connection) -> SqliteResult<()> {
     // 初始化迁移系统
@@ -160,6 +193,20 @@ pub fn run_migrations(conn: &Connection) -> SqliteResult<()> {
         }
     }
 
+    // 迁移 2: 添加增量读取字段
+    if current_version < 2 {
+        match migration_002_add_incremental_fields(&tx) {
+            Ok(_) => {
+                record_migration(&tx, 2)?;
+                info!("迁移 2 已应用");
+            }
+            Err(e) => {
+                warn!("迁移 2 失败: {}", e);
+                return Err(e);
+            }
+        }
+    }
+
     // 提交事务
     tx.commit()?;
 
@@ -177,7 +224,7 @@ mod tests {
         // 创建内存数据库
         let conn = Connection::open_in_memory().unwrap();
 
-        // 创建基础 schema
+        // 创建基础 schema（模拟老版本数据库）
         conn.execute_batch(
             r#"
             CREATE TABLE IF NOT EXISTS messages (
@@ -190,6 +237,11 @@ mod tests {
                 timestamp INTEGER NOT NULL,
                 sequence INTEGER NOT NULL
             );
+            CREATE TABLE IF NOT EXISTS sessions (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                session_id TEXT NOT NULL UNIQUE,
+                project_id INTEGER NOT NULL
+            );
             "#,
         )
         .unwrap();
@@ -197,15 +249,19 @@ mod tests {
         // 运行迁移
         run_migrations(&conn).unwrap();
 
-        // 验证列是否存在
+        // 验证迁移 1 的列是否存在
         assert!(column_exists(&conn, "messages", "approval_status").unwrap());
         assert!(column_exists(&conn, "messages", "approval_resolved_at").unwrap());
 
+        // 验证迁移 2 的列是否存在
+        assert!(column_exists(&conn, "sessions", "file_offset").unwrap());
+        assert!(column_exists(&conn, "sessions", "file_inode").unwrap());
+
         // 验证版本
-        assert_eq!(get_current_version(&conn).unwrap(), 1);
+        assert_eq!(get_current_version(&conn).unwrap(), 2);
 
         // 再次运行迁移应该是幂等的
         run_migrations(&conn).unwrap();
-        assert_eq!(get_current_version(&conn).unwrap(), 1);
+        assert_eq!(get_current_version(&conn).unwrap(), 2);
     }
 }

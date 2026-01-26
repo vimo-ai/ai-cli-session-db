@@ -4,8 +4,11 @@
 //! 支持多数据源：Claude、OpenCode、Codex 等。
 
 use crate::db::{MessageInput, SessionDB, SessionInput};
-use crate::{all_adapters, ConversationAdapter, SessionMeta};
+use crate::{
+    all_adapters, ConversationAdapter, FileIdentity, IncrementalAdapter, ReaderState, SessionMeta,
+};
 use anyhow::Result;
+use std::os::unix::fs::MetadataExt;
 use std::path::Path;
 use std::sync::Arc;
 
@@ -127,6 +130,8 @@ impl<'a> Collector<'a> {
                     message_count: Some(parse_result.messages.len() as i64),
                     file_mtime: meta.file_mtime.map(|t| t as i64),
                     file_size: meta.file_size.map(|s| s as i64),
+                    file_offset: None, // 全量扫描不使用增量读取
+                    file_inode: None,
                     meta: None,
                 };
                 if let Err(e) = self.db.upsert_session_full(&session_input) {
@@ -217,11 +222,9 @@ impl<'a> Collector<'a> {
     /// 按路径采集单个会话（精确索引）
     ///
     /// 直接从文件路径解析，不扫描目录。
-    /// 使用时间戳增量采集：只采集比数据库中最新消息更新的消息（提前量 30 分钟）。
+    /// 使用字节偏移量增量采集：只读取文件新增的部分。
     pub fn collect_by_path(&self, path: &str) -> Result<CollectResult> {
         use std::fs;
-
-        const BUFFER_MS: i64 = 30 * 60 * 1000; // 30 分钟提前量
 
         let mut result = CollectResult::default();
         let file_path = Path::new(path);
@@ -236,17 +239,21 @@ impl<'a> Collector<'a> {
         };
 
         // 获取文件元数据
-        let (file_mtime, file_size) = match fs::metadata(file_path) {
-            Ok(meta) => {
-                let mtime = meta
-                    .modified()
-                    .ok()
-                    .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
-                    .map(|d| d.as_millis() as i64);
-                (mtime, Some(meta.len() as i64))
+        let file_metadata = match fs::metadata(file_path) {
+            Ok(meta) => meta,
+            Err(e) => {
+                tracing::debug!("无法获取文件元数据 {}: {}", path, e);
+                return Ok(result);
             }
-            Err(_) => (None, None),
         };
+
+        let file_mtime = file_metadata
+            .modified()
+            .ok()
+            .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+            .map(|d| d.as_millis() as i64);
+        let file_size = file_metadata.len() as i64;
+        let file_inode = file_metadata.ino() as i64;
 
         // 从路径提取 encoded_dir_name
         let encoded_dir_name = extract_encoded_dir_name(path);
@@ -262,6 +269,16 @@ impl<'a> Collector<'a> {
 
         let source = adapter.source();
         let source_str = source.to_string();
+
+        // 尝试获取 IncrementalAdapter（目前只有 ClaudeAdapter 支持）
+        let incremental_adapter: Option<&dyn IncrementalAdapter> =
+            if adapter.meta().source == crate::Source::Claude {
+                // 安全的向下转换：ClaudeAdapter 实现了 IncrementalAdapter
+                // 由于 Rust trait object 的限制，我们需要创建一个新的 ClaudeAdapter
+                None // 暂时禁用，下面会直接用 ClaudeAdapter
+            } else {
+                None
+            };
 
         // 直接构造 SessionMeta，不扫描目录
         let meta = SessionMeta {
@@ -282,16 +299,45 @@ impl<'a> Collector<'a> {
             updated_at: None,
         };
 
-        // 解析会话
-        let parse_result = match adapter.parse_session(&meta) {
-            Ok(Some(r)) => r,
-            Ok(None) => return Ok(result),
-            Err(e) => {
-                result
-                    .errors
-                    .push(format!("Failed to parse session {}: {}", session_id, e));
-                return Ok(result);
+        // 检查是否支持增量读取
+        let use_incremental = source == crate::Source::Claude && incremental_adapter.is_none();
+
+        // 如果是 Claude 源，使用增量读取
+        let (parse_result, new_state) = if use_incremental {
+            // 获取数据库中保存的增量状态
+            let saved_state = self.db.get_session_incremental_state(&session_id)?;
+
+            // 构建 ReaderState
+            let reader_state = saved_state.map(|(offset, mtime, size, inode)| {
+                let file_id = FileIdentity::new(
+                    inode.unwrap_or(0) as u64,
+                    mtime.unwrap_or(0) as u64,
+                    size.unwrap_or(0) as u64,
+                );
+                ReaderState::from_saved(offset as u64, file_id)
+            });
+
+            // 使用 ClaudeAdapter 的增量读取
+            let claude_adapter = crate::ClaudeAdapter::new();
+            let incremental_result = claude_adapter.parse_session_incremental(&meta, reader_state)?;
+
+            if incremental_result.was_reset {
+                tracing::info!(
+                    "会话 {} 文件发生变化，触发全量重新解析",
+                    session_id
+                );
             }
+
+            (incremental_result.result, Some(incremental_result.state))
+        } else {
+            // 使用传统的全量解析
+            let result = adapter.parse_session(&meta)?;
+            (result, None)
+        };
+
+        let parse_result = match parse_result {
+            Some(r) => r,
+            None => return Ok(result),
         };
 
         // 从解析结果获取 project_path（cwd）
@@ -302,13 +348,6 @@ impl<'a> Collector<'a> {
                 return Ok(result);
             }
         };
-
-        // 获取数据库中该会话的最新消息时间戳
-        let latest_ts = self
-            .db
-            .get_session_latest_timestamp(&session_id)
-            .unwrap_or(None);
-        let cutoff_ts = latest_ts.map(|ts| ts - BUFFER_MS).unwrap_or(0);
 
         // 获取或创建项目
         let project_name = extract_project_name(&project_path);
@@ -337,7 +376,9 @@ impl<'a> Collector<'a> {
             channel: Some("code".to_string()),
             message_count: Some(parse_result.messages.len() as i64),
             file_mtime,
-            file_size,
+            file_size: Some(file_size),
+            file_offset: new_state.as_ref().map(|s| s.offset as i64),
+            file_inode: Some(file_inode),
             meta: None,
         };
         if let Err(e) = self.db.upsert_session_full(&session_input) {
@@ -347,12 +388,12 @@ impl<'a> Collector<'a> {
             return Ok(result);
         }
 
-        // 转换消息格式，过滤掉旧消息（时间戳增量采集）
+        // 转换消息格式
         let messages: Vec<MessageInput> = parse_result
             .messages
             .iter()
             .enumerate()
-            .filter_map(|(i, msg)| {
+            .map(|(i, msg)| {
                 let timestamp = msg
                     .timestamp
                     .as_ref()
@@ -364,12 +405,7 @@ impl<'a> Collector<'a> {
                             .unwrap_or(0)
                     });
 
-                // 只保留比 cutoff_ts 更新的消息
-                if timestamp <= cutoff_ts {
-                    return None;
-                }
-
-                Some(MessageInput {
+                MessageInput {
                     uuid: msg.uuid.clone(),
                     r#type: msg.message_type,
                     content_text: msg.content.text.clone(),
@@ -385,7 +421,7 @@ impl<'a> Collector<'a> {
                     raw: msg.raw.clone(),
                     approval_status: None,
                     approval_resolved_at: None,
-                })
+                }
             })
             .collect();
 
@@ -412,6 +448,21 @@ impl<'a> Collector<'a> {
                 result
                     .errors
                     .push(format!("Failed to insert messages: {}", e));
+            }
+        }
+
+        // 更新增量状态
+        if let Some(state) = new_state {
+            if let Some(file_id) = &state.file_id {
+                if let Err(e) = self.db.update_session_incremental_state(
+                    &session_id,
+                    state.offset as i64,
+                    file_id.mtime as i64,
+                    file_id.size as i64,
+                    file_id.inode as i64,
+                ) {
+                    tracing::warn!("更新增量状态失败: {}", e);
+                }
             }
         }
 

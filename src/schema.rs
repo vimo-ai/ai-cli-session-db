@@ -27,6 +27,8 @@ CREATE TABLE IF NOT EXISTS sessions (
     -- 增量检测字段
     file_mtime INTEGER,       -- 文件修改时间戳 (毫秒)
     file_size INTEGER,        -- 文件大小 (字节)
+    file_offset INTEGER DEFAULT 0,  -- 文件读取偏移量 (字节)
+    file_inode INTEGER,       -- 文件 inode (用于检测文件替换)
     -- 额外元信息
     meta TEXT,                -- 额外元信息 (JSON)
     -- 时间戳

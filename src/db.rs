@@ -257,8 +257,8 @@ impl SessionDB {
 
         conn.execute(
             r#"
-            INSERT INTO sessions (session_id, project_id, cwd, model, channel, message_count, file_mtime, file_size, meta, created_at, updated_at)
-            VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?10)
+            INSERT INTO sessions (session_id, project_id, cwd, model, channel, message_count, file_mtime, file_size, file_offset, file_inode, meta, created_at, updated_at)
+            VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?12)
             ON CONFLICT(session_id) DO UPDATE SET
                 cwd = COALESCE(excluded.cwd, sessions.cwd),
                 model = COALESCE(excluded.model, sessions.model),
@@ -266,6 +266,8 @@ impl SessionDB {
                 message_count = COALESCE(excluded.message_count, sessions.message_count),
                 file_mtime = COALESCE(excluded.file_mtime, sessions.file_mtime),
                 file_size = COALESCE(excluded.file_size, sessions.file_size),
+                file_offset = COALESCE(excluded.file_offset, sessions.file_offset),
+                file_inode = COALESCE(excluded.file_inode, sessions.file_inode),
                 meta = COALESCE(excluded.meta, sessions.meta),
                 updated_at = excluded.updated_at
             "#,
@@ -278,6 +280,8 @@ impl SessionDB {
                 input.message_count,
                 input.file_mtime,
                 input.file_size,
+                input.file_offset,
+                input.file_inode,
                 input.meta,
                 now,
             ],
@@ -584,6 +588,68 @@ impl SessionDB {
             .optional()?;
 
         Ok(result.flatten())
+    }
+
+    /// 获取 session 的增量读取状态 (用于增量读取)
+    ///
+    /// 返回:
+    /// - `Ok(None)` - session 不存在
+    /// - `Ok(Some((offset, mtime, size, inode)))` - 增量读取状态
+    pub fn get_session_incremental_state(
+        &self,
+        session_id: &str,
+    ) -> Result<Option<(i64, Option<i64>, Option<i64>, Option<i64>)>> {
+        let conn = self.conn.lock();
+        let result = conn
+            .query_row(
+                "SELECT file_offset, file_mtime, file_size, file_inode FROM sessions WHERE session_id = ?1",
+                params![session_id],
+                |row| {
+                    Ok((
+                        row.get::<_, Option<i64>>(0)?.unwrap_or(0),
+                        row.get::<_, Option<i64>>(1)?,
+                        row.get::<_, Option<i64>>(2)?,
+                        row.get::<_, Option<i64>>(3)?,
+                    ))
+                },
+            )
+            .optional()?;
+
+        Ok(result)
+    }
+
+    /// 更新 session 的增量读取状态
+    ///
+    /// - session_id: 会话 ID
+    /// - offset: 当前文件偏移量
+    /// - mtime: 文件修改时间戳（毫秒）
+    /// - size: 文件大小（字节）
+    /// - inode: 文件 inode
+    pub fn update_session_incremental_state(
+        &self,
+        session_id: &str,
+        offset: i64,
+        mtime: i64,
+        size: i64,
+        inode: i64,
+    ) -> Result<()> {
+        let conn = self.conn.lock();
+        let now = current_time_ms();
+
+        conn.execute(
+            r#"
+            UPDATE sessions SET
+                file_offset = ?1,
+                file_mtime = ?2,
+                file_size = ?3,
+                file_inode = ?4,
+                updated_at = ?5
+            WHERE session_id = ?6
+            "#,
+            params![offset, mtime, size, inode, now, session_id],
+        )?;
+
+        Ok(())
     }
 
     /// 更新 session 的最后消息时间
@@ -1439,6 +1505,8 @@ pub struct SessionInput {
     // 增量检测字段
     pub file_mtime: Option<i64>,
     pub file_size: Option<i64>,
+    pub file_offset: Option<i64>,
+    pub file_inode: Option<i64>,
     // 额外元信息
     pub meta: Option<String>,
 }

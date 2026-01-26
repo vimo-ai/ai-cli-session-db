@@ -89,6 +89,13 @@ pub use ai_cli_session_collector::{
     ClaudeAdapter,
     CodexAdapter,
     ConversationAdapter,
+    // 增量读取
+    FileIdentity,
+    IncrementalAdapter,
+    IncrementalParseResult,
+    JsonlIncrementalReader,
+    ReadStats,
+    ReaderState,
     // 领域类型
     IndexableMessage,
     IndexableSession,
