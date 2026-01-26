@@ -568,6 +568,24 @@ impl SessionDB {
         Ok(result.flatten())
     }
 
+    /// 获取 session 的文件修改时间 (用于 mtime 剪枝)
+    ///
+    /// 返回:
+    /// - `Ok(None)` - session 不存在或 file_mtime 为空
+    /// - `Ok(Some(mtime))` - 文件修改时间戳
+    pub fn get_session_file_mtime(&self, session_id: &str) -> Result<Option<i64>> {
+        let conn = self.conn.lock();
+        let result: Option<Option<i64>> = conn
+            .query_row(
+                "SELECT file_mtime FROM sessions WHERE session_id = ?1",
+                params![session_id],
+                |row| row.get::<_, Option<i64>>(0),
+            )
+            .optional()?;
+
+        Ok(result.flatten())
+    }
+
     /// 更新 session 的最后消息时间
     pub fn update_session_last_message(&self, session_id: &str, timestamp: i64) -> Result<()> {
         let conn = self.conn.lock();

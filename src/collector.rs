@@ -4,7 +4,7 @@
 //! 支持多数据源：Claude、OpenCode、Codex 等。
 
 use crate::db::{MessageInput, SessionDB, SessionInput};
-use crate::{all_adapters, ConversationAdapter};
+use crate::{all_adapters, ConversationAdapter, SessionMeta};
 use anyhow::Result;
 use std::path::Path;
 use std::sync::Arc;
@@ -67,6 +67,15 @@ impl<'a> Collector<'a> {
                     continue;
                 }
 
+                // mtime 剪枝：文件未变化则跳过
+                if let Some(file_mtime) = meta.file_mtime {
+                    if let Ok(Some(db_mtime)) = self.db.get_session_file_mtime(&meta.id) {
+                        if file_mtime == db_mtime as u64 {
+                            continue; // 文件未变化，跳过
+                        }
+                    }
+                }
+
                 // 获取或创建项目
                 let project_name = meta
                     .project_name
@@ -116,8 +125,8 @@ impl<'a> Collector<'a> {
                     model: parse_result.model.clone(),
                     channel: meta.channel.clone(),
                     message_count: Some(parse_result.messages.len() as i64),
-                    file_mtime: None,
-                    file_size: None,
+                    file_mtime: meta.file_mtime.map(|t| t as i64),
+                    file_size: meta.file_size.map(|s| s as i64),
                     meta: None,
                 };
                 if let Err(e) = self.db.upsert_session_full(&session_input) {
@@ -207,13 +216,40 @@ impl<'a> Collector<'a> {
 
     /// 按路径采集单个会话（精确索引）
     ///
+    /// 直接从文件路径解析，不扫描目录。
     /// 使用时间戳增量采集：只采集比数据库中最新消息更新的消息（提前量 30 分钟）。
-    /// 支持多数据源：根据文件路径自动选择正确的 Adapter。
     pub fn collect_by_path(&self, path: &str) -> Result<CollectResult> {
+        use std::fs;
+
         const BUFFER_MS: i64 = 30 * 60 * 1000; // 30 分钟提前量
 
         let mut result = CollectResult::default();
         let file_path = Path::new(path);
+
+        // 从路径提取 session_id
+        let session_id = match file_path.file_stem().and_then(|s| s.to_str()) {
+            Some(id) => id.to_string(),
+            None => {
+                tracing::debug!("Invalid file path: {}", path);
+                return Ok(result);
+            }
+        };
+
+        // 获取文件元数据
+        let (file_mtime, file_size) = match fs::metadata(file_path) {
+            Ok(meta) => {
+                let mtime = meta
+                    .modified()
+                    .ok()
+                    .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+                    .map(|d| d.as_millis() as i64);
+                (mtime, Some(meta.len() as i64))
+            }
+            Err(_) => (None, None),
+        };
+
+        // 从路径提取 encoded_dir_name
+        let encoded_dir_name = extract_encoded_dir_name(path);
 
         // 根据路径找到对应的 adapter
         let adapter = match self.adapters.iter().find(|a| a.should_handle(file_path)) {
@@ -227,65 +263,59 @@ impl<'a> Collector<'a> {
         let source = adapter.source();
         let source_str = source.to_string();
 
-        // 列出会话元数据（找到匹配此路径的会话）
-        let sessions = match adapter.list_sessions() {
-            Ok(s) => s,
-            Err(e) => {
-                result
-                    .errors
-                    .push(format!("Failed to list sessions: {}", e));
-                return Ok(result);
-            }
-        };
-
-        // 找到对应的会话元数据
-        let meta = match sessions
-            .iter()
-            .find(|m| m.session_path.as_deref() == Some(path))
-        {
-            Some(m) => m,
-            None => {
-                tracing::debug!("Session meta not found for path: {}", path);
-                return Ok(result);
-            }
+        // 直接构造 SessionMeta，不扫描目录
+        let meta = SessionMeta {
+            id: session_id.clone(),
+            source,
+            channel: Some("code".to_string()),
+            project_path: String::new(), // 后面从解析结果获取
+            project_name: None,
+            encoded_dir_name: encoded_dir_name.clone(),
+            session_path: Some(path.to_string()),
+            file_mtime: None,
+            file_size: None,
+            message_count: None,
+            cwd: None,
+            model: None,
+            meta: None,
+            created_at: None,
+            updated_at: None,
         };
 
         // 解析会话
-        let parse_result = match adapter.parse_session(meta) {
+        let parse_result = match adapter.parse_session(&meta) {
             Ok(Some(r)) => r,
             Ok(None) => return Ok(result),
             Err(e) => {
                 result
                     .errors
-                    .push(format!("Failed to parse session {}: {}", meta.id, e));
+                    .push(format!("Failed to parse session {}: {}", session_id, e));
                 return Ok(result);
             }
         };
 
-        let encoded_dir_name = extract_encoded_dir_name(path);
+        // 从解析结果获取 project_path（cwd）
+        let project_path = match &parse_result.cwd {
+            Some(cwd) if !cwd.is_empty() => cwd.clone(),
+            _ => {
+                tracing::debug!("跳过空 cwd: session_id={}", session_id);
+                return Ok(result);
+            }
+        };
 
         // 获取数据库中该会话的最新消息时间戳
         let latest_ts = self
             .db
-            .get_session_latest_timestamp(&meta.id)
+            .get_session_latest_timestamp(&session_id)
             .unwrap_or(None);
         let cutoff_ts = latest_ts.map(|ts| ts - BUFFER_MS).unwrap_or(0);
 
-        // 跳过空 project_path 的会话（文件可能不完整，下次采集会重试）
-        if meta.project_path.is_empty() {
-            tracing::debug!("跳过空 project_path: session_id={}", meta.id);
-            return Ok(result);
-        }
-
         // 获取或创建项目
-        let project_name = meta
-            .project_name
-            .as_deref()
-            .unwrap_or_else(|| extract_project_name(&meta.project_path));
+        let project_name = extract_project_name(&project_path);
 
         let project_id = match self.db.get_or_create_project_with_encoded(
             project_name,
-            &meta.project_path,
+            &project_path,
             &source_str,
             encoded_dir_name.as_deref(),
         ) {
@@ -300,14 +330,14 @@ impl<'a> Collector<'a> {
 
         // 创建/更新会话
         let session_input = SessionInput {
-            session_id: meta.id.clone(),
+            session_id: session_id.clone(),
             project_id,
             cwd: parse_result.cwd.clone(),
             model: parse_result.model.clone(),
-            channel: meta.channel.clone(),
+            channel: Some("code".to_string()),
             message_count: Some(parse_result.messages.len() as i64),
-            file_mtime: None,
-            file_size: None,
+            file_mtime,
+            file_size,
             meta: None,
         };
         if let Err(e) = self.db.upsert_session_full(&session_input) {
@@ -365,7 +395,7 @@ impl<'a> Collector<'a> {
         }
 
         // 插入消息（ON CONFLICT DO NOTHING 保证不重复）
-        match self.db.insert_messages(&meta.id, &messages) {
+        match self.db.insert_messages(&session_id, &messages) {
             Ok(inserted) => {
                 result.sessions_scanned = 1;
                 result.messages_inserted = inserted;
@@ -373,7 +403,7 @@ impl<'a> Collector<'a> {
                     tracing::info!(
                         "Incremental indexing [{}]: session {} inserted {} messages",
                         source_str,
-                        meta.id,
+                        session_id,
                         inserted
                     );
                 }
