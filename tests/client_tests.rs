@@ -51,7 +51,7 @@ mod tests {
         let mut config = ClientConfig::default();
         config.data_dir = PathBuf::from("/tmp/test-vimo");
 
-        let binary_path = config.agent_binary_path();
+        let binary_path = config.default_agent_binary_path();
         assert_eq!(binary_path, PathBuf::from("/tmp/test-vimo/bin/vimo-agent"));
     }
 }

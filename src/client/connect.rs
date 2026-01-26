@@ -453,21 +453,38 @@ fn cleanup_stale(config: &ClientConfig) -> Result<()> {
 
 /// 启动 Agent
 fn start_agent(config: &ClientConfig) -> Result<()> {
-    let agent_path = config.find_agent_binary().ok_or_else(|| {
-        anyhow::anyhow!(
-            "找不到 Agent 二进制。\n\
-             尝试过的路径：\n\
-             - 配置覆盖: {:?}\n\
-             - 环境变量 VIMO_AGENT_PATH: {:?}\n\
-             - 默认路径: {:?}\n\
-             - Cargo target 目录\n\
-             \n\
-             请设置 VIMO_AGENT_PATH 环境变量，或运行 `cargo build -p ai-cli-session-db --features agent --bin vimo-agent`",
-            config.agent_binary_override,
-            std::env::var("VIMO_AGENT_PATH").ok(),
-            config.default_agent_binary_path()
-        )
-    })?;
+    // 尝试查找或下载 Agent
+    let agent_path = match config.find_agent_binary() {
+        Some(path) => path,
+        None => {
+            tracing::info!("本地未找到 vimo-agent，尝试从 GitHub Release 下载...");
+
+            match download_agent_from_github(config) {
+                Ok(path) => {
+                    tracing::info!("✅ vimo-agent 下载成功");
+                    path
+                }
+                Err(e) => {
+                    return Err(anyhow::anyhow!(
+                        "找不到 Agent 二进制，且自动下载失败: {}\n\
+                         \n\
+                         尝试过的路径：\n\
+                         - 配置覆盖: {:?}\n\
+                         - 环境变量 VIMO_AGENT_PATH: {:?}\n\
+                         - 默认路径: {:?}\n\
+                         - Cargo target 目录\n\
+                         - GitHub Release 自动下载\n\
+                         \n\
+                         请手动设置 VIMO_AGENT_PATH 环境变量，或运行 `cargo build -p ai-cli-session-db --features agent --bin vimo-agent`",
+                        e,
+                        config.agent_binary_override,
+                        std::env::var("VIMO_AGENT_PATH").ok(),
+                        config.default_agent_binary_path()
+                    ));
+                }
+            }
+        }
+    };
 
     tracing::info!("启动 Agent: {:?}", agent_path);
 
@@ -478,4 +495,149 @@ fn start_agent(config: &ClientConfig) -> Result<()> {
         .context("启动 Agent 失败")?;
 
     Ok(())
+}
+
+/// 从 GitHub Release 下载 vimo-agent
+fn download_agent_from_github(config: &ClientConfig) -> Result<PathBuf> {
+    // 检测平台（确保当前平台受支持）
+    let _platform = detect_platform()?;
+
+    // 构建下载 URL
+    // TODO: 目前写死版本号，后续改成动态获取或从 memex 统一下载
+    let url = "https://github.com/vimo-ai/ai-cli-session-db/releases/download/v0.0.1-beta.5/vimo-agent";
+
+    tracing::info!("下载 URL: {}", url);
+
+    // 下载文件
+    let url_owned = url.to_string();
+    let response = std::thread::spawn(move || {
+        // 使用 std 的网络库进行简单的 HTTP GET
+        download_file_simple(&url_owned)
+    })
+    .join()
+    .map_err(|_| anyhow::anyhow!("下载线程 panic"))??;
+
+    // 确保目标目录存在
+    let install_dir = config.data_dir.join("bin");
+    fs::create_dir_all(&install_dir)
+        .context("创建 ~/.vimo/bin 目录失败")?;
+
+    // 写入文件
+    let install_path = install_dir.join("vimo-agent");
+    fs::write(&install_path, response)
+        .context("写入 vimo-agent 文件失败")?;
+
+    // 设置可执行权限 (Unix)
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        fs::set_permissions(&install_path, fs::Permissions::from_mode(0o755))
+            .context("设置可执行权限失败")?;
+    }
+
+    tracing::info!("vimo-agent 已下载到: {:?}", install_path);
+
+    Ok(install_path)
+}
+
+/// 检测当前平台
+fn detect_platform() -> Result<String> {
+    let os = std::env::consts::OS;
+    let arch = std::env::consts::ARCH;
+
+    let platform = match (os, arch) {
+        ("macos", "aarch64") => "darwin-arm64",
+        ("macos", "x86_64") => "darwin-x64",
+        ("linux", "x86_64") => "linux-x64",
+        _ => {
+            return Err(anyhow::anyhow!(
+                "不支持的平台: os={}, arch={}",
+                os, arch
+            ));
+        }
+    };
+
+    Ok(platform.to_string())
+}
+
+/// 简单的 HTTP GET 下载（使用 std 网络库）
+fn download_file_simple(url: &str) -> Result<Vec<u8>> {
+    use std::io::Read;
+
+    // 解析 URL
+    let url_parsed = url.strip_prefix("https://")
+        .ok_or_else(|| anyhow::anyhow!("仅支持 HTTPS"))?;
+
+    let (host, path) = url_parsed.split_once('/')
+        .ok_or_else(|| anyhow::anyhow!("URL 格式错误"))?;
+
+    // 使用 TLS 连接
+    let stream = std::net::TcpStream::connect(format!("{}:443", host))
+        .context("TCP 连接失败")?;
+
+    let connector = native_tls::TlsConnector::new()
+        .context("创建 TLS connector 失败")?;
+
+    let mut stream = connector.connect(host, stream)
+        .context("TLS 握手失败")?;
+
+    // 发送 HTTP 请求
+    let request = format!(
+        "GET /{} HTTP/1.1\r\n\
+         Host: {}\r\n\
+         User-Agent: vimo-agent-downloader/1.0\r\n\
+         Connection: close\r\n\
+         \r\n",
+        path, host
+    );
+
+    use std::io::Write;
+    stream.write_all(request.as_bytes())
+        .context("发送 HTTP 请求失败")?;
+
+    // 读取响应
+    let mut response = Vec::new();
+    stream.read_to_end(&mut response)
+        .context("读取 HTTP 响应失败")?;
+
+    // 解析 HTTP 响应（简单处理）
+    let response_str = String::from_utf8_lossy(&response);
+
+    // 检查状态码
+    if !response_str.starts_with("HTTP/1.1 200")
+        && !response_str.starts_with("HTTP/1.0 200")
+        && !response_str.starts_with("HTTP/2 200") {
+        // 处理重定向 - 跟随 Location 头
+        if response_str.starts_with("HTTP/1.1 302")
+            || response_str.starts_with("HTTP/1.1 301")
+            || response_str.starts_with("HTTP/1.1 307")
+            || response_str.starts_with("HTTP/1.1 308") {
+            // 提取 Location 头
+            for line in response_str.lines() {
+                if line.to_lowercase().starts_with("location:") {
+                    let redirect_url = line.split_once(':')
+                        .map(|(_, v)| v.trim())
+                        .ok_or_else(|| anyhow::anyhow!("无法解析 Location 头"))?;
+                    tracing::info!("跟随重定向: {}", redirect_url);
+                    return download_file_simple(redirect_url);
+                }
+            }
+            return Err(anyhow::anyhow!(
+                "下载失败: 收到重定向但找不到 Location 头"
+            ));
+        }
+
+        return Err(anyhow::anyhow!(
+            "下载失败: HTTP 状态码异常\n响应头: {}",
+            response_str.lines().take(10).collect::<Vec<_>>().join("\n")
+        ));
+    }
+
+    // 分离 header 和 body
+    let body_start = response.windows(4)
+        .position(|w| w == b"\r\n\r\n")
+        .ok_or_else(|| anyhow::anyhow!("找不到 HTTP body"))?
+        + 4;
+
+    Ok(response[body_start..].to_vec())
 }
