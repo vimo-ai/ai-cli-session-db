@@ -71,7 +71,7 @@ impl FileWatcher {
             match debouncer.watcher().watch(&config.path, recursive_mode) {
                 Ok(_) => {
                     tracing::info!(
-                        "👁️ 监听 {} 目录: {:?} (扩展名: {:?})",
+                        "👁️ Watching {} directory: {:?} (extensions: {:?})",
                         config.name,
                         config.path,
                         config.extensions
@@ -79,7 +79,7 @@ impl FileWatcher {
                 }
                 Err(e) => {
                     tracing::warn!(
-                        "⚠️ 监听 {} 目录失败 {:?}: {}",
+                        "⚠️ Failed to watch {} directory {:?}: {}",
                         config.name,
                         config.path,
                         e
@@ -89,11 +89,11 @@ impl FileWatcher {
         }
 
         if watch_configs.is_empty() {
-            tracing::warn!("⚠️ 未找到有效的监听目录");
+            tracing::warn!("⚠️ No valid watch directories found");
         }
 
         tracing::info!(
-            "🔄 文件监听服务启动 ({} 个目录)",
+            "🔄 File watcher service started ({} directories)",
             watch_configs.len()
         );
 
@@ -123,17 +123,17 @@ impl FileWatcher {
             return;
         }
 
-        tracing::debug!("📝 检测到文件变化: {:?}", path);
+        tracing::debug!("📝 File change detected: {:?}", path);
 
         if let Err(e) = self.trigger_collect(path).await {
-            tracing::error!("处理文件变化失败 {:?}: {}", path.file_name(), e);
+            tracing::error!("Failed to process file change {:?}: {}", path.file_name(), e);
         }
     }
 
     /// 触发 Collection（供外部调用，如 Kit 通知）
     pub async fn trigger_collect(&self, path: &Path) -> Result<()> {
         let path_str = path.to_str().ok_or_else(|| {
-            anyhow::anyhow!("无法转换路径: {:?}", path)
+            anyhow::anyhow!("Cannot convert path: {:?}", path)
         })?.to_string();
 
         let path_clone = path.to_path_buf();
@@ -149,7 +149,7 @@ impl FileWatcher {
 
         if result.messages_inserted > 0 {
             tracing::debug!(
-                "📝 收集完成: {:?} → {} 条新消息",
+                "📝 Collection complete: {:?} → {} new messages",
                 path_clone.file_name().unwrap_or_default(),
                 result.messages_inserted
             );

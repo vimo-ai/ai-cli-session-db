@@ -45,7 +45,7 @@ impl Broadcaster {
         self.senders.write().insert(conn_id, sender);
         self.subscriptions.write().insert(conn_id, HashSet::new());
 
-        tracing::debug!("📡 连接注册: conn_id={}", conn_id);
+        tracing::debug!("📡 Connection registered: conn_id={}", conn_id);
         conn_id
     }
 
@@ -53,7 +53,7 @@ impl Broadcaster {
     pub fn unregister(&self, conn_id: ConnId) {
         self.senders.write().remove(&conn_id);
         self.subscriptions.write().remove(&conn_id);
-        tracing::debug!("📡 连接注销: conn_id={}", conn_id);
+        tracing::debug!("📡 Connection unregistered: conn_id={}", conn_id);
     }
 
     /// 订阅事件
@@ -62,7 +62,7 @@ impl Broadcaster {
             for event in &events {
                 sub.insert(*event);
             }
-            tracing::debug!("📡 订阅事件: conn_id={}, events={:?}", conn_id, events);
+            tracing::debug!("📡 Subscribed to events: conn_id={}, events={:?}", conn_id, events);
         }
     }
 
@@ -72,7 +72,7 @@ impl Broadcaster {
             for event in &events {
                 sub.remove(event);
             }
-            tracing::debug!("📡 取消订阅: conn_id={}, events={:?}", conn_id, events);
+            tracing::debug!("📡 Unsubscribed from events: conn_id={}, events={:?}", conn_id, events);
         }
     }
 
@@ -85,7 +85,7 @@ impl Broadcaster {
         let message = match serde_json::to_string(&push) {
             Ok(json) => format!("{}\n", json),
             Err(e) => {
-                tracing::error!("序列化事件失败: {}", e);
+                tracing::error!("Failed to serialize event: {}", e);
                 return;
             }
         };
@@ -104,12 +104,12 @@ impl Broadcaster {
         };
 
         if targets.is_empty() {
-            tracing::trace!("📡 无订阅者: event_type={:?}", event_type);
+            tracing::trace!("📡 No subscribers: event_type={:?}", event_type);
             return;
         }
 
         tracing::debug!(
-            "📡 广播事件: event_type={:?}, 订阅者={}",
+            "📡 Broadcasting event: event_type={:?}, subscribers={}",
             event_type,
             targets.len()
         );
@@ -118,7 +118,7 @@ impl Broadcaster {
         for (conn_id, sender) in targets {
             let msg = message.clone();
             if sender.send(msg).await.is_err() {
-                tracing::warn!("📡 发送失败，连接可能已断开: conn_id={}", conn_id);
+                tracing::warn!("📡 Send failed, connection may be closed: conn_id={}", conn_id);
                 // 不在这里清理，由连接处理逻辑负责
             }
         }

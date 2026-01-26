@@ -12,7 +12,7 @@ fn main() -> Result<()> {
     let args: Vec<String> = std::env::args().collect();
 
     if args.len() < 3 {
-        eprintln!("用法: {} <数据库路径> <JSONL目录或文件>...", args[0]);
+        eprintln!("Usage: {} <database_path> <JSONL_dir_or_file>...", args[0]);
         eprintln!(
             "例: {} ~/.vimo/db/ai-cli-session-v2.db ~/memex-data/archive/2025/12/",
             args[0]
@@ -23,13 +23,13 @@ fn main() -> Result<()> {
     let db_path = &args[1];
     let sources: Vec<&str> = args[2..].iter().map(|s| s.as_str()).collect();
 
-    println!("目标数据库: {}", db_path);
+    println!("Target database: {}", db_path);
 
     let mut conn = Connection::open(db_path)?;
 
     // 获取已有的 uuid 集合（用于跳过已存在的消息）
     let existing_uuids = get_existing_uuids(&conn)?;
-    println!("已有消息数: {}", existing_uuids.len());
+    println!("Existing messages: {}", existing_uuids.len());
 
     // 收集所有 JSONL 文件
     let mut jsonl_files = Vec::new();
@@ -42,7 +42,7 @@ fn main() -> Result<()> {
         }
     }
 
-    println!("找到 {} 个 JSONL 文件", jsonl_files.len());
+    println!("Found {} JSONL files", jsonl_files.len());
 
     let mut total_sessions = 0;
     let mut total_messages = 0;
@@ -66,20 +66,20 @@ fn main() -> Result<()> {
                 updated_messages += updated;
             }
             Err(e) => {
-                eprintln!("处理失败 {:?}: {}", jsonl_path, e);
+                eprintln!("Processing failed {:?}: {}", jsonl_path, e);
             }
         }
     }
 
     tx.commit()?;
 
-    println!("\n=== 迁移完成 ===");
-    println!("处理会话: {}", total_sessions);
-    println!("新增消息: {}", total_messages);
-    println!("更新消息: {}", updated_messages);
+    println!("\n=== Migration complete ===");
+    println!("Sessions processed: {}", total_sessions);
+    println!("Messages inserted: {}", total_messages);
+    println!("Messages updated: {}", updated_messages);
 
     // 重建 FTS 和触发器
-    println!("\n重建 FTS 索引...");
+    println!("\nRebuilding FTS index...");
     conn.execute(
         "INSERT INTO messages_fts(messages_fts) VALUES('rebuild')",
         [],
@@ -98,7 +98,7 @@ fn main() -> Result<()> {
          END;",
     )?;
 
-    println!("完成");
+    println!("Done");
 
     Ok(())
 }

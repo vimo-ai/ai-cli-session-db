@@ -76,9 +76,9 @@ impl Agent {
     pub fn new(config: AgentConfig) -> Result<Self> {
         // 确保数据目录存在
         fs::create_dir_all(&config.data_dir)
-            .context("创建数据目录失败")?;
+            .context("Failed to create data directory")?;
         fs::create_dir_all(config.data_dir.join("db"))
-            .context("创建数据库目录失败")?;
+            .context("Failed to create database directory")?;
 
         // 连接数据库
         let db_config = DbConfig::local(config.db_path().to_str().unwrap());
@@ -116,12 +116,12 @@ impl Agent {
 
         // 创建 Unix Socket 监听器
         let listener = UnixListener::bind(&socket_path)
-            .context("绑定 socket 失败")?;
+            .context("Failed to bind socket")?;
 
         // 设置 socket 权限为 0600
         fs::set_permissions(&socket_path, fs::Permissions::from_mode(0o600))?;
 
-        tracing::info!("🚀 Agent 启动: {:?}", socket_path);
+        tracing::info!("🚀 Agent started: {:?}", socket_path);
 
         // 启动时执行全量扫描（mtime 剪枝会跳过未变化的文件）
         {
@@ -132,14 +132,14 @@ impl Agent {
                     Ok(result) => {
                         if result.messages_inserted > 0 {
                             tracing::info!(
-                                "📊 启动扫描完成: {} 个会话, {} 条新消息",
+                                "📊 Startup scan complete: {} sessions, {} new messages",
                                 result.sessions_scanned,
                                 result.messages_inserted
                             );
                         }
                     }
                     Err(e) => {
-                        tracing::error!("启动扫描失败: {}", e);
+                        tracing::error!("Startup scan failed: {}", e);
                     }
                 }
             })
@@ -171,17 +171,17 @@ impl Agent {
                             let agent = self.clone();
                             tokio::spawn(async move {
                                 if let Err(e) = agent.handle_connection(stream).await {
-                                    tracing::error!("处理连接失败: {}", e);
+                                    tracing::error!("Failed to handle connection: {}", e);
                                 }
                             });
                         }
                         Err(e) => {
-                            tracing::error!("接受连接失败: {}", e);
+                            tracing::error!("Failed to accept connection: {}", e);
                         }
                     }
                 }
                 _ = tokio::signal::ctrl_c() => {
-                    tracing::info!("收到中断信号，准备退出...");
+                    tracing::info!("Received interrupt signal, preparing to exit...");
                     break;
                 }
             }
@@ -201,7 +201,7 @@ impl Agent {
 
         // 注册连接
         let conn_id = self.broadcaster.register(tx);
-        tracing::debug!("📥 新连接: conn_id={}", conn_id);
+        tracing::debug!("📥 New connection: conn_id={}", conn_id);
 
         // 启动发送任务
         let write_handle = tokio::spawn(async move {
@@ -226,7 +226,7 @@ impl Agent {
                     let request: Request = match serde_json::from_str(&line) {
                         Ok(r) => r,
                         Err(e) => {
-                            tracing::warn!("解析请求失败: {}", e);
+                            tracing::warn!("Failed to parse request: {}", e);
                             let response = Response::Error {
                                 code: 400,
                                 message: format!("Invalid JSON: {}", e),
@@ -247,7 +247,7 @@ impl Agent {
                     }
                 }
                 Err(e) => {
-                    tracing::error!("读取失败: {}", e);
+                    tracing::error!("Read failed: {}", e);
                     break;
                 }
             }
@@ -256,7 +256,7 @@ impl Agent {
         // 清理
         self.broadcaster.unregister(conn_id);
         write_handle.abort();
-        tracing::debug!("📤 连接关闭: conn_id={}", conn_id);
+        tracing::debug!("📤 Connection closed: conn_id={}", conn_id);
 
         Ok(())
     }
@@ -275,7 +275,7 @@ impl Agent {
                 idle_count = 0;
                 // 如果之前设置了 shutdown，现在取消它
                 if self.shutdown.load(Ordering::Relaxed) {
-                    tracing::info!("🔄 有新连接，取消退出");
+                    tracing::info!("🔄 New connection detected, canceling exit");
                     self.shutdown.store(false, Ordering::Relaxed);
                 }
             } else {
@@ -283,7 +283,7 @@ impl Agent {
                 idle_count += 1;
                 if idle_count >= idle_threshold && !self.shutdown.load(Ordering::Relaxed) {
                     tracing::info!(
-                        "⏰ 空闲超时 ({}s)，准备退出...",
+                        "⏰ Idle timeout ({}s), preparing to exit...",
                         self.config.idle_timeout_secs
                     );
                     self.shutdown.store(true, Ordering::Relaxed);
@@ -298,7 +298,7 @@ impl Agent {
         let pid_path = self.config.pid_path();
         fs::write(&pid_path, pid.to_string())?;
         fs::set_permissions(&pid_path, fs::Permissions::from_mode(0o600))?;
-        tracing::debug!("📝 写入 PID 文件: {} (pid={})", pid_path.display(), pid);
+        tracing::debug!("📝 Writing PID file: {} (pid={})", pid_path.display(), pid);
         Ok(())
     }
 
@@ -316,7 +316,7 @@ impl Agent {
             let _ = fs::remove_file(&pid_path);
         }
 
-        tracing::info!("🧹 Agent 清理完成");
+        tracing::info!("🧹 Agent cleanup complete");
     }
 }
 
@@ -351,12 +351,12 @@ pub fn cleanup_stale_agent(config: &AgentConfig) -> Result<()> {
 
     if socket_path.exists() {
         fs::remove_file(&socket_path)?;
-        tracing::debug!("🧹 删除残留 socket: {:?}", socket_path);
+        tracing::debug!("🧹 Removed stale socket: {:?}", socket_path);
     }
 
     if pid_path.exists() {
         fs::remove_file(&pid_path)?;
-        tracing::debug!("🧹 删除残留 PID 文件: {:?}", pid_path);
+        tracing::debug!("🧹 Removed stale PID file: {:?}", pid_path);
     }
 
     Ok(())

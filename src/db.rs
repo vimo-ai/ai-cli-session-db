@@ -23,7 +23,7 @@ impl SessionDB {
     pub fn connect(config: DbConfig) -> Result<Self> {
         match config.mode {
             ConnectionMode::Local => Self::connect_local(&config),
-            ConnectionMode::Remote => Err(Error::Config("远程连接暂不支持".into())),
+            ConnectionMode::Remote => Err(Error::Config("Remote connection not supported yet".into())),
         }
     }
 
@@ -57,7 +57,7 @@ impl SessionDB {
         let full_schema = schema::full_schema(fts);
         conn.execute_batch(&full_schema)?;
 
-        tracing::info!("数据库已连接: {:?}", path);
+        tracing::info!("Database connected: {:?}", path);
 
         Ok(Self {
             conn: Arc::new(Mutex::new(conn)),
@@ -1469,7 +1469,7 @@ impl SessionDB {
             }
 
             tracing::info!(
-                "去重项目 path={}: 保留 ID {}, 删除 {:?}",
+                "Deduplicated project path={}: kept ID {}, deleted {:?}",
                 path,
                 keep_id,
                 &project_sessions[1..]

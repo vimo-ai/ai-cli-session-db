@@ -66,7 +66,7 @@ impl<'a> Collector<'a> {
             for meta in sessions {
                 // 跳过空 project_path 的会话（文件可能不完整，下次采集会重试）
                 if meta.project_path.is_empty() {
-                    tracing::debug!("跳过空 project_path: session_id={}", meta.id);
+                    tracing::debug!("Skipping empty project_path: session_id={}", meta.id);
                     continue;
                 }
 
@@ -242,7 +242,7 @@ impl<'a> Collector<'a> {
         let file_metadata = match fs::metadata(file_path) {
             Ok(meta) => meta,
             Err(e) => {
-                tracing::debug!("无法获取文件元数据 {}: {}", path, e);
+                tracing::debug!("Cannot get file metadata {}: {}", path, e);
                 return Ok(result);
             }
         };
@@ -323,7 +323,7 @@ impl<'a> Collector<'a> {
 
             if incremental_result.was_reset {
                 tracing::info!(
-                    "会话 {} 文件发生变化，触发全量重新解析",
+                    "Session {} file changed, triggering full re-parse",
                     session_id
                 );
             }
@@ -344,7 +344,7 @@ impl<'a> Collector<'a> {
         let project_path = match &parse_result.cwd {
             Some(cwd) if !cwd.is_empty() => cwd.clone(),
             _ => {
-                tracing::debug!("跳过空 cwd: session_id={}", session_id);
+                tracing::debug!("Skipping empty cwd: session_id={}", session_id);
                 return Ok(result);
             }
         };
@@ -461,7 +461,7 @@ impl<'a> Collector<'a> {
                     file_id.size as i64,
                     file_id.inode as i64,
                 ) {
-                    tracing::warn!("更新增量状态失败: {}", e);
+                    tracing::warn!("Failed to update incremental state: {}", e);
                 }
             }
         }

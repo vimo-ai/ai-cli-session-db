@@ -19,7 +19,7 @@ pub fn initialize_migrations(conn: &Connection) -> SqliteResult<()> {
         [],
     )?;
 
-    info!("迁移系统已初始化");
+    info!("Migration system initialized");
     Ok(())
 }
 
@@ -80,11 +80,11 @@ fn column_exists(conn: &Connection, table: &str, column: &str) -> SqliteResult<b
 
 /// 迁移 1: 添加审批字段到 messages 表
 fn migration_001_add_approval_fields(conn: &Connection) -> SqliteResult<()> {
-    info!("开始执行迁移 001: 添加审批字段");
+    info!("Running migration 001: Add approval fields");
 
     // 如果表不存在，跳过迁移（schema 会创建完整表）
     if !table_exists(conn, "messages")? {
-        info!("messages 表不存在，跳过迁移（将由 schema 创建完整表）");
+        info!("messages table does not exist, skipping migration (will be created by schema)");
         return Ok(());
     }
 
@@ -92,28 +92,28 @@ fn migration_001_add_approval_fields(conn: &Connection) -> SqliteResult<()> {
     let approval_status_exists = column_exists(conn, "messages", "approval_status")?;
 
     if !approval_status_exists {
-        info!("添加 approval_status 列");
+        info!("Adding approval_status column");
         conn.execute("ALTER TABLE messages ADD COLUMN approval_status TEXT", [])?;
     } else {
-        info!("approval_status 列已存在，跳过");
+        info!("approval_status column already exists, skipping");
     }
 
     // 检查 approval_resolved_at 列是否存在
     let approval_resolved_at_exists = column_exists(conn, "messages", "approval_resolved_at")?;
 
     if !approval_resolved_at_exists {
-        info!("添加 approval_resolved_at 列");
+        info!("Adding approval_resolved_at column");
         conn.execute(
             "ALTER TABLE messages ADD COLUMN approval_resolved_at INTEGER",
             [],
         )?;
     } else {
-        info!("approval_resolved_at 列已存在，跳过");
+        info!("approval_resolved_at column already exists, skipping");
     }
 
     // 创建索引（如果不存在）
     // SQLite 的 CREATE INDEX IF NOT EXISTS 是安全的
-    info!("创建审批状态索引");
+    info!("Creating approval status indexes");
     conn.execute(
         "CREATE INDEX IF NOT EXISTS idx_messages_approval_status ON messages(approval_status) WHERE approval_status IS NOT NULL",
         [],
@@ -124,40 +124,40 @@ fn migration_001_add_approval_fields(conn: &Connection) -> SqliteResult<()> {
         [],
     )?;
 
-    info!("迁移 001 完成");
+    info!("Migration 001 complete");
     Ok(())
 }
 
 /// 迁移 2: 添加增量读取字段到 sessions 表
 fn migration_002_add_incremental_fields(conn: &Connection) -> SqliteResult<()> {
-    info!("开始执行迁移 002: 添加增量读取字段");
+    info!("Running migration 002: Add incremental read fields");
 
     // 如果表不存在，跳过迁移
     if !table_exists(conn, "sessions")? {
-        info!("sessions 表不存在，跳过迁移（将由 schema 创建完整表）");
+        info!("sessions table does not exist, skipping migration (will be created by schema)");
         return Ok(());
     }
 
     // 添加 file_offset 列
     if !column_exists(conn, "sessions", "file_offset")? {
-        info!("添加 file_offset 列");
+        info!("Adding file_offset column");
         conn.execute(
             "ALTER TABLE sessions ADD COLUMN file_offset INTEGER DEFAULT 0",
             [],
         )?;
     } else {
-        info!("file_offset 列已存在，跳过");
+        info!("file_offset column already exists, skipping");
     }
 
     // 添加 file_inode 列
     if !column_exists(conn, "sessions", "file_inode")? {
-        info!("添加 file_inode 列");
+        info!("Adding file_inode column");
         conn.execute("ALTER TABLE sessions ADD COLUMN file_inode INTEGER", [])?;
     } else {
-        info!("file_inode 列已存在，跳过");
+        info!("file_inode column already exists, skipping");
     }
 
-    info!("迁移 002 完成");
+    info!("Migration 002 complete");
     Ok(())
 }
 
@@ -168,11 +168,11 @@ pub fn run_migrations(conn: &Connection) -> SqliteResult<()> {
 
     // 获取当前版本
     let current_version = get_current_version(conn)?;
-    info!("当前数据库版本: {}", current_version);
+    info!("Current database version: {}", current_version);
 
     // 如果已经是最新版本，直接返回
     if current_version >= MIGRATION_VERSION {
-        info!("数据库已是最新版本，无需迁移");
+        info!("Database is up to date, no migration needed");
         return Ok(());
     }
 
@@ -184,10 +184,10 @@ pub fn run_migrations(conn: &Connection) -> SqliteResult<()> {
         match migration_001_add_approval_fields(&tx) {
             Ok(_) => {
                 record_migration(&tx, 1)?;
-                info!("迁移 1 已应用");
+                info!("Migration 1 applied");
             }
             Err(e) => {
-                warn!("迁移 1 失败: {}", e);
+                warn!("Migration 1 failed: {}", e);
                 return Err(e);
             }
         }
@@ -198,10 +198,10 @@ pub fn run_migrations(conn: &Connection) -> SqliteResult<()> {
         match migration_002_add_incremental_fields(&tx) {
             Ok(_) => {
                 record_migration(&tx, 2)?;
-                info!("迁移 2 已应用");
+                info!("Migration 2 applied");
             }
             Err(e) => {
-                warn!("迁移 2 失败: {}", e);
+                warn!("Migration 2 failed: {}", e);
                 return Err(e);
             }
         }
@@ -210,7 +210,7 @@ pub fn run_migrations(conn: &Connection) -> SqliteResult<()> {
     // 提交事务
     tx.commit()?;
 
-    info!("所有迁移已成功应用，当前版本: {}", MIGRATION_VERSION);
+    info!("All migrations applied successfully, current version: {}", MIGRATION_VERSION);
     Ok(())
 }
 

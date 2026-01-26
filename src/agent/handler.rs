@@ -96,11 +96,11 @@ impl Handler {
 
     /// 处理文件变化通知
     async fn handle_file_change(&self, path: PathBuf) -> Response {
-        tracing::debug!("📝 收到文件变化通知: {:?}", path);
+        tracing::debug!("📝 Received file change notification: {:?}", path);
 
         // 触发即时 collection
         if let Err(e) = self.watcher.trigger_collect(&path).await {
-            tracing::error!("处理文件变化失败: {}", e);
+            tracing::error!("Failed to process file change: {}", e);
             return Response::Error {
                 code: 500,
                 message: format!("Collection failed: {}", e),
@@ -122,7 +122,7 @@ impl Handler {
         match self.db.mark_messages_indexed(indexed_message_ids) {
             Ok(_) => Response::Ok,
             Err(e) => {
-                tracing::error!("写入 Index 结果失败: {}", e);
+                tracing::error!("Failed to write index result: {}", e);
                 Response::Error {
                     code: 500,
                     message: format!("Failed to mark messages indexed: {}", e),
@@ -149,7 +149,7 @@ impl Handler {
         match self.db.upsert_talk_summary(session_id, talk_id, summary_l2, summary_l3) {
             Ok(_) => Response::Ok,
             Err(e) => {
-                tracing::error!("写入 Compact 结果失败: {}", e);
+                tracing::error!("Failed to write compact result: {}", e);
                 Response::Error {
                     code: 500,
                     message: format!("Failed to write compact result: {}", e),
@@ -181,7 +181,7 @@ impl Handler {
         match self.db.update_approval_status_by_tool_call_id(tool_call_id, db_status, resolved_at) {
             Ok(_) => Response::Ok,
             Err(e) => {
-                tracing::error!("写入 Approve 结果失败: {}", e);
+                tracing::error!("Failed to write approval result: {}", e);
                 Response::Error {
                     code: 500,
                     message: format!("Failed to update approval status: {}", e),

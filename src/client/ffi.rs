@@ -194,8 +194,8 @@ pub unsafe extern "C" fn agent_client_connect(handle: *mut AgentClientHandle) ->
     let client = match handle.runtime.block_on(connect_or_start_agent(config)) {
         Ok(c) => c,
         Err(e) => {
-            tracing::error!("连接 Agent 失败: {}", e);
-            if e.to_string().contains("找不到 Agent") {
+            tracing::error!("Failed to connect to Agent: {}", e);
+            if e.to_string().contains("Agent binary not found") {
                 return FfiError::AgentNotFound;
             }
             return FfiError::ConnectionFailed;
@@ -238,7 +238,7 @@ pub unsafe extern "C" fn agent_client_connect(handle: *mut AgentClientHandle) ->
                 // 没有消息，检查 shutdown 或短暂休眠
                 tokio::select! {
                     _ = shutdown_rx.recv() => {
-                        tracing::debug!("收到 shutdown 信号，退出事件循环");
+                        tracing::debug!("Received shutdown signal, exiting event loop");
                         break;
                     }
                     _ = tokio::time::sleep(tokio::time::Duration::from_millis(10)) => {
@@ -346,7 +346,7 @@ pub unsafe extern "C" fn agent_client_subscribe(
     match handle.runtime.block_on(client.subscribe(event_types)) {
         Ok(_) => FfiError::Success,
         Err(e) => {
-            tracing::error!("订阅失败: {}", e);
+            tracing::error!("Subscription failed: {}", e);
             FfiError::RequestFailed
         }
     }
@@ -386,7 +386,7 @@ pub unsafe extern "C" fn agent_client_notify_file_change(
     match handle.runtime.block_on(client.notify_file_change(path)) {
         Ok(_) => FfiError::Success,
         Err(e) => {
-            tracing::error!("通知文件变化失败: {}", e);
+            tracing::error!("Failed to notify file change: {}", e);
             FfiError::RequestFailed
         }
     }
@@ -428,7 +428,7 @@ pub unsafe extern "C" fn agent_client_write_approve_result(
     match handle.runtime.block_on(client.write_approve_result(tool_call_id, status.into(), resolved_at)) {
         Ok(_) => FfiError::Success,
         Err(e) => {
-            tracing::error!("写入审批结果失败: {}", e);
+            tracing::error!("Failed to write approval result: {}", e);
             FfiError::RequestFailed
         }
     }

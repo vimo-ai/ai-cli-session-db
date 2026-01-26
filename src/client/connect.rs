@@ -119,7 +119,7 @@ impl ClientConfig {
         // 4. 查找源路径并自动部署
         if let Some(source_path) = self.find_agent_source() {
             if let Err(e) = self.deploy_agent(&source_path) {
-                tracing::warn!("自动部署 Agent 失败: {}", e);
+                tracing::warn!("Failed to auto-deploy Agent: {}", e);
                 // 部署失败时直接使用源路径
                 return Some(source_path);
             }
@@ -135,7 +135,7 @@ impl ClientConfig {
         if let Some(ref source_dir) = self.agent_source_dir {
             let path = source_dir.join("vimo-agent");
             if path.exists() {
-                tracing::debug!("从 agent_source_dir 找到 Agent: {:?}", path);
+                tracing::debug!("Found Agent in agent_source_dir: {:?}", path);
                 return Some(path);
             }
         }
@@ -193,7 +193,7 @@ impl ClientConfig {
             fs::set_permissions(&install_path, fs::Permissions::from_mode(0o755))?;
         }
 
-        tracing::info!("✅ Agent 已部署: {:?} -> {:?}", source, install_path);
+        tracing::info!("✅ Agent deployed: {:?} -> {:?}", source, install_path);
         Ok(())
     }
 }
@@ -305,11 +305,11 @@ pub async fn connect_or_start_agent(config: ClientConfig) -> Result<AgentClient>
     for attempt in 1..=config.connect_retries {
         match UnixStream::connect(&socket_path).await {
             Ok(stream) => {
-                tracing::debug!("连接 Agent 成功 (attempt={})", attempt);
+                tracing::debug!("Connected to Agent successfully (attempt={})", attempt);
                 return finish_connect(config, stream).await;
             }
             Err(e) => {
-                tracing::debug!("连接 Agent 失败 (attempt={}): {}", attempt, e);
+                tracing::debug!("Failed to connect to Agent (attempt={}): {}", attempt, e);
                 if attempt < config.connect_retries {
                     sleep(Duration::from_millis(config.retry_interval_ms)).await;
                 }
@@ -319,7 +319,7 @@ pub async fn connect_or_start_agent(config: ClientConfig) -> Result<AgentClient>
 
     // 2. 检查残留状态
     if is_agent_stuck(&config) {
-        tracing::warn!("检测到 Agent 卡死，清理残留状态...");
+        tracing::warn!("Agent appears stuck, cleaning up stale state...");
         cleanup_stale(&config)?;
     }
 
@@ -331,14 +331,14 @@ pub async fn connect_or_start_agent(config: ClientConfig) -> Result<AgentClient>
         sleep(Duration::from_millis(200)).await;
 
         if let Ok(stream) = UnixStream::connect(&socket_path).await {
-            tracing::info!("Agent 启动成功，已连接");
+            tracing::info!("Agent started successfully, connected");
             return finish_connect(config, stream).await;
         }
 
-        tracing::debug!("等待 Agent ready (attempt={})", attempt);
+        tracing::debug!("Waiting for Agent to be ready (attempt={})", attempt);
     }
 
-    Err(anyhow::anyhow!("启动 Agent 超时"))
+    Err(anyhow::anyhow!("Timeout starting Agent"))
 }
 
 /// 完成连接（握手 + 启动读取任务）
@@ -361,13 +361,13 @@ async fn finish_connect(config: ClientConfig, stream: UnixStream) -> Result<Agen
     let response: crate::protocol::Response = serde_json::from_str(&line)?;
     match response {
         crate::protocol::Response::HandshakeOk { agent_version } => {
-            tracing::info!("握手成功: agent_version={}", agent_version);
+            tracing::info!("Handshake successful: agent_version={}", agent_version);
         }
         crate::protocol::Response::Error { code, message } => {
-            return Err(anyhow::anyhow!("握手失败: {} (code={})", message, code));
+            return Err(anyhow::anyhow!("Handshake failed: {} (code={})", message, code));
         }
         _ => {
-            return Err(anyhow::anyhow!("握手响应异常"));
+            return Err(anyhow::anyhow!("Unexpected handshake response"));
         }
     }
 
@@ -435,7 +435,7 @@ fn cleanup_stale(config: &ClientConfig) -> Result<()> {
                 unsafe {
                     libc::kill(pid, libc::SIGKILL);
                 }
-                tracing::debug!("杀死残留 Agent 进程: pid={}", pid);
+                tracing::debug!("Killed stale Agent process: pid={}", pid);
             }
         }
     }
@@ -457,25 +457,25 @@ fn start_agent(config: &ClientConfig) -> Result<()> {
     let agent_path = match config.find_agent_binary() {
         Some(path) => path,
         None => {
-            tracing::info!("本地未找到 vimo-agent，尝试从 GitHub Release 下载...");
+            tracing::info!("vimo-agent not found locally, attempting to download from GitHub Release...");
 
             match download_agent_from_github(config) {
                 Ok(path) => {
-                    tracing::info!("✅ vimo-agent 下载成功");
+                    tracing::info!("✅ vimo-agent downloaded successfully");
                     path
                 }
                 Err(e) => {
                     return Err(anyhow::anyhow!(
-                        "找不到 Agent 二进制，且自动下载失败: {}\n\
+                        "Agent binary not found and auto-download failed: {}\n\
                          \n\
-                         尝试过的路径：\n\
-                         - 配置覆盖: {:?}\n\
-                         - 环境变量 VIMO_AGENT_PATH: {:?}\n\
-                         - 默认路径: {:?}\n\
-                         - Cargo target 目录\n\
-                         - GitHub Release 自动下载\n\
+                         Tried paths:\n\
+                         - Config override: {:?}\n\
+                         - Environment variable VIMO_AGENT_PATH: {:?}\n\
+                         - Default path: {:?}\n\
+                         - Cargo target directory\n\
+                         - GitHub Release auto-download\n\
                          \n\
-                         请手动设置 VIMO_AGENT_PATH 环境变量，或运行 `cargo build -p ai-cli-session-db --features agent --bin vimo-agent`",
+                         Please set VIMO_AGENT_PATH environment variable or run `cargo build -p ai-cli-session-db --features agent --bin vimo-agent`",
                         e,
                         config.agent_binary_override,
                         std::env::var("VIMO_AGENT_PATH").ok(),
@@ -486,13 +486,13 @@ fn start_agent(config: &ClientConfig) -> Result<()> {
         }
     };
 
-    tracing::info!("启动 Agent: {:?}", agent_path);
+    tracing::info!("Starting Agent: {:?}", agent_path);
 
     Command::new(&agent_path)
         .stdout(Stdio::null())
         .stderr(Stdio::null())
         .spawn()
-        .context("启动 Agent 失败")?;
+        .context("Failed to start Agent")?;
 
     Ok(())
 }
@@ -506,7 +506,7 @@ fn download_agent_from_github(config: &ClientConfig) -> Result<PathBuf> {
     // TODO: 目前写死版本号，后续改成动态获取或从 memex 统一下载
     let url = "https://github.com/vimo-ai/ai-cli-session-db/releases/download/v0.0.1-beta.5/vimo-agent";
 
-    tracing::info!("下载 URL: {}", url);
+    tracing::info!("Download URL: {}", url);
 
     // 下载文件
     let url_owned = url.to_string();
@@ -515,27 +515,27 @@ fn download_agent_from_github(config: &ClientConfig) -> Result<PathBuf> {
         download_file_simple(&url_owned)
     })
     .join()
-    .map_err(|_| anyhow::anyhow!("下载线程 panic"))??;
+    .map_err(|_| anyhow::anyhow!("Download thread panicked"))??;
 
     // 确保目标目录存在
     let install_dir = config.data_dir.join("bin");
     fs::create_dir_all(&install_dir)
-        .context("创建 ~/.vimo/bin 目录失败")?;
+        .context("Failed to create ~/.vimo/bin directory")?;
 
     // 写入文件
     let install_path = install_dir.join("vimo-agent");
     fs::write(&install_path, response)
-        .context("写入 vimo-agent 文件失败")?;
+        .context("Failed to write vimo-agent file")?;
 
     // 设置可执行权限 (Unix)
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
         fs::set_permissions(&install_path, fs::Permissions::from_mode(0o755))
-            .context("设置可执行权限失败")?;
+            .context("Failed to set executable permission")?;
     }
 
-    tracing::info!("vimo-agent 已下载到: {:?}", install_path);
+    tracing::info!("vimo-agent downloaded to: {:?}", install_path);
 
     Ok(install_path)
 }
@@ -551,7 +551,7 @@ fn detect_platform() -> Result<String> {
         ("linux", "x86_64") => "linux-x64",
         _ => {
             return Err(anyhow::anyhow!(
-                "不支持的平台: os={}, arch={}",
+                "Unsupported platform: os={}, arch={}",
                 os, arch
             ));
         }
@@ -566,20 +566,20 @@ fn download_file_simple(url: &str) -> Result<Vec<u8>> {
 
     // 解析 URL
     let url_parsed = url.strip_prefix("https://")
-        .ok_or_else(|| anyhow::anyhow!("仅支持 HTTPS"))?;
+        .ok_or_else(|| anyhow::anyhow!("Only HTTPS is supported"))?;
 
     let (host, path) = url_parsed.split_once('/')
-        .ok_or_else(|| anyhow::anyhow!("URL 格式错误"))?;
+        .ok_or_else(|| anyhow::anyhow!("Invalid URL format"))?;
 
     // 使用 TLS 连接
     let stream = std::net::TcpStream::connect(format!("{}:443", host))
-        .context("TCP 连接失败")?;
+        .context("TCP connection failed")?;
 
     let connector = native_tls::TlsConnector::new()
-        .context("创建 TLS connector 失败")?;
+        .context("Failed to create TLS connector")?;
 
     let mut stream = connector.connect(host, stream)
-        .context("TLS 握手失败")?;
+        .context("TLS handshake failed")?;
 
     // 发送 HTTP 请求
     let request = format!(
@@ -593,12 +593,12 @@ fn download_file_simple(url: &str) -> Result<Vec<u8>> {
 
     use std::io::Write;
     stream.write_all(request.as_bytes())
-        .context("发送 HTTP 请求失败")?;
+        .context("Failed to send HTTP request")?;
 
     // 读取响应
     let mut response = Vec::new();
     stream.read_to_end(&mut response)
-        .context("读取 HTTP 响应失败")?;
+        .context("Failed to read HTTP response")?;
 
     // 解析 HTTP 响应（简单处理）
     let response_str = String::from_utf8_lossy(&response);
@@ -617,18 +617,18 @@ fn download_file_simple(url: &str) -> Result<Vec<u8>> {
                 if line.to_lowercase().starts_with("location:") {
                     let redirect_url = line.split_once(':')
                         .map(|(_, v)| v.trim())
-                        .ok_or_else(|| anyhow::anyhow!("无法解析 Location 头"))?;
-                    tracing::info!("跟随重定向: {}", redirect_url);
+                        .ok_or_else(|| anyhow::anyhow!("Cannot parse Location header"))?;
+                    tracing::info!("Following redirect: {}", redirect_url);
                     return download_file_simple(redirect_url);
                 }
             }
             return Err(anyhow::anyhow!(
-                "下载失败: 收到重定向但找不到 Location 头"
+                "Download failed: Received redirect but Location header not found"
             ));
         }
 
         return Err(anyhow::anyhow!(
-            "下载失败: HTTP 状态码异常\n响应头: {}",
+            "Download failed: Unexpected HTTP status\nResponse headers: {}",
             response_str.lines().take(10).collect::<Vec<_>>().join("\n")
         ));
     }
@@ -636,7 +636,7 @@ fn download_file_simple(url: &str) -> Result<Vec<u8>> {
     // 分离 header 和 body
     let body_start = response.windows(4)
         .position(|w| w == b"\r\n\r\n")
-        .ok_or_else(|| anyhow::anyhow!("找不到 HTTP body"))?
+        .ok_or_else(|| anyhow::anyhow!("HTTP body not found"))?
         + 4;
 
     Ok(response[body_start..].to_vec())

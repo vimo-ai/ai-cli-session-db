@@ -27,19 +27,19 @@ async fn main() -> Result<()> {
 
     // 检查是否已有 Agent 运行
     if is_agent_running(&config) {
-        tracing::error!("❌ Agent 已在运行，退出");
+        tracing::error!("❌ Agent is already running, exiting");
         std::process::exit(1);
     }
 
     // 清理残留状态
     if let Err(e) = cleanup_stale_agent(&config) {
-        tracing::warn!("清理残留状态失败: {}", e);
+        tracing::warn!("Failed to cleanup stale state: {}", e);
     }
 
     // 创建并运行 Agent
     let agent = Arc::new(Agent::new(config)?);
     agent.run().await?;
 
-    tracing::info!("👋 vimo-agent 退出");
+    tracing::info!("👋 vimo-agent exiting");
     Ok(())
 }
