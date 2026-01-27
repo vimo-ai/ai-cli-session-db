@@ -51,11 +51,6 @@ jobs:
             target: aarch64-unknown-linux-gnu
             artifact: vimo-agent-linux-arm64
             ext: ""
-          - name: Windows x64
-            os: windows-latest
-            target: x86_64-pc-windows-msvc
-            artifact: vimo-agent-windows-x64
-            ext: ".exe"
 
     steps:
       - uses: actions/checkout@v4
@@ -257,7 +252,6 @@ jobs:
             | macOS Intel | `vimo-agent-darwin-x64` | [SHA256](vimo-agent-darwin-x64.sha256) |
             | Linux x64 | `vimo-agent-linux-x64` | [SHA256](vimo-agent-linux-x64.sha256) |
             | Linux arm64 | `vimo-agent-linux-arm64` | [SHA256](vimo-agent-linux-arm64.sha256) |
-            | Windows x64 | `vimo-agent-windows-x64.exe` | [SHA256](vimo-agent-windows-x64.exe.sha256) |
 
             ### FFI dylib (for ETerm Swift)
 
@@ -284,12 +278,6 @@ jobs:
             curl -L -o ~/.vimo/bin/vimo-agent \
               https://github.com/${{ github.repository }}/releases/download/${{ github.ref_name }}/$FILE
             chmod +x ~/.vimo/bin/vimo-agent
-            ```
-
-            **Windows (PowerShell):**
-            ```powershell
-            New-Item -ItemType Directory -Force -Path "$env:USERPROFILE\.vimo\bin"
-            Invoke-WebRequest -Uri "https://github.com/${{ github.repository }}/releases/download/${{ github.ref_name }}/vimo-agent-windows-x64.exe" -OutFile "$env:USERPROFILE\.vimo\bin\vimo-agent.exe"
             ```
           draft: false
           prerelease: ${{ contains(github.ref_name, 'beta') || contains(github.ref_name, 'alpha') }}
