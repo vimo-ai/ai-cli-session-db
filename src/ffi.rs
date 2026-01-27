@@ -1561,11 +1561,11 @@ pub unsafe extern "C" fn session_db_get_session_path(
     };
 
     let path = if projects_path.is_null() {
-        let home = match std::env::var("HOME") {
-            Ok(h) => h,
-            Err(_) => return std::ptr::null_mut(),
+        let home = match dirs::home_dir() {
+            Some(h) => h,
+            None => return std::ptr::null_mut(),
         };
-        PathBuf::from(home).join(".claude/projects")
+        home.join(".claude/projects")
     } else {
         let path_str = match CStr::from_ptr(projects_path).to_str() {
             Ok(s) => s,
@@ -1613,11 +1613,11 @@ pub unsafe extern "C" fn session_db_get_encoded_dir_name(
     };
 
     let path = if projects_path.is_null() {
-        let home = match std::env::var("HOME") {
-            Ok(h) => h,
-            Err(_) => return std::ptr::null_mut(),
+        let home = match dirs::home_dir() {
+            Some(h) => h,
+            None => return std::ptr::null_mut(),
         };
-        PathBuf::from(home).join(".claude/projects")
+        home.join(".claude/projects")
     } else {
         let path_str = match CStr::from_ptr(projects_path).to_str() {
             Ok(s) => s,
@@ -1673,11 +1673,11 @@ pub unsafe extern "C" fn session_db_compute_session_path(
     };
 
     let path = if projects_path.is_null() {
-        let home = match std::env::var("HOME") {
-            Ok(h) => h,
-            Err(_) => return std::ptr::null_mut(),
+        let home = match dirs::home_dir() {
+            Some(h) => h,
+            None => return std::ptr::null_mut(),
         };
-        PathBuf::from(home).join(".claude/projects")
+        home.join(".claude/projects")
     } else {
         let path_str = match CStr::from_ptr(projects_path).to_str() {
             Ok(s) => s,
@@ -1735,8 +1735,8 @@ pub unsafe extern "C" fn session_db_list_file_projects(
     let result = panic::catch_unwind(AssertUnwindSafe(|| {
         // 获取 projects 目录路径
         let path = if projects_path.is_null() {
-            let home = std::env::var("HOME").map_err(|_| FfiError::Unknown)?;
-            PathBuf::from(home).join(".claude/projects")
+            let home = dirs::home_dir().ok_or(FfiError::Unknown)?;
+            home.join(".claude/projects")
         } else {
             let path_str = CStr::from_ptr(projects_path)
                 .to_str()
@@ -1877,8 +1877,8 @@ pub unsafe extern "C" fn session_db_list_session_metas(
     let result = panic::catch_unwind(AssertUnwindSafe(|| {
         // 获取 projects 目录路径
         let path = if projects_path.is_null() {
-            let home = std::env::var("HOME").map_err(|_| FfiError::Unknown)?;
-            PathBuf::from(home).join(".claude/projects")
+            let home = dirs::home_dir().ok_or(FfiError::Unknown)?;
+            home.join(".claude/projects")
         } else {
             let path_str = CStr::from_ptr(projects_path)
                 .to_str()
@@ -2212,9 +2212,9 @@ pub unsafe extern "C" fn session_db_read_session_messages(
             updated_at: None,
         };
 
-        // 使用默认路径创建 adapter
-        let home = std::env::var("HOME").map_err(|_| FfiError::Unknown)?;
-        let projects_path = PathBuf::from(home).join(".claude/projects");
+        // 使用默认路径创建 adapter（跨平台）
+        let home = dirs::home_dir().ok_or(FfiError::Unknown)?;
+        let projects_path = home.join(".claude/projects");
         let adapter = ClaudeAdapter::with_path(projects_path);
 
         let parse_result = adapter
