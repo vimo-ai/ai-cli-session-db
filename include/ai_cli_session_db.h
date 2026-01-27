@@ -18,6 +18,10 @@ typedef enum AgentEventType {
     NewMessage = 0,
     SessionStart = 1,
     SessionEnd = 2,
+    /**
+     * Hook 事件（L2 瞬时通知）
+     */
+    HookEvent = 3,
 } AgentEventType;
 
 /**

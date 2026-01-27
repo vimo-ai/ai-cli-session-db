@@ -5,6 +5,52 @@
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 
+/// Claude Code Hook 事件（L2 瞬时通知）
+///
+/// 由 claude_hook.sh 发送，用于即时 UI 反馈（如 Tab 装饰）。
+/// event_type 使用 string 保证向前兼容（未知类型静默忽略）。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct HookEvent {
+    /// 事件类型：SessionStart/SessionEnd/UserPromptSubmit/Stop/Notification/PermissionRequest
+    pub event_type: String,
+    /// 会话 ID
+    pub session_id: String,
+    /// transcript 文件路径（用于触发 Collection）
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub transcript_path: Option<String>,
+    /// 工作目录
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub cwd: Option<String>,
+    /// 用户输入（UserPromptSubmit 事件）
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub prompt: Option<String>,
+    /// 工具名称（PermissionRequest 事件）
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tool_name: Option<String>,
+    /// 工具输入（PermissionRequest 事件）
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tool_input: Option<serde_json::Value>,
+    /// 工具调用 ID（PermissionRequest 事件）
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tool_use_id: Option<String>,
+    /// 通知类型（Notification 事件）
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub notification_type: Option<String>,
+    /// 通知消息（Notification 事件）
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub message: Option<String>,
+}
+
+/// 已知的 Hook 事件类型常量
+pub mod hook_event_type {
+    pub const SESSION_START: &str = "SessionStart";
+    pub const SESSION_END: &str = "SessionEnd";
+    pub const USER_PROMPT_SUBMIT: &str = "UserPromptSubmit";
+    pub const STOP: &str = "Stop";
+    pub const NOTIFICATION: &str = "Notification";
+    pub const PERMISSION_REQUEST: &str = "PermissionRequest";
+}
+
 /// 请求类型（Client → Agent）
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type")]
@@ -71,6 +117,11 @@ pub enum Request {
         /// 查询类型
         query_type: QueryType,
     },
+
+    /// Hook 事件（来自 claude_hook.sh）
+    ///
+    /// 触发即时 Collection 并广播给订阅者
+    HookEvent(HookEvent),
 }
 
 /// 响应类型（Agent → Client）
@@ -120,6 +171,9 @@ pub enum Push {
     SessionEnd {
         session_id: String,
     },
+
+    /// Hook 事件广播（L2 瞬时通知）
+    HookEvent(HookEvent),
 }
 
 /// 事件类型（用于订阅）
@@ -128,6 +182,8 @@ pub enum EventType {
     NewMessage,
     SessionStart,
     SessionEnd,
+    /// Hook 事件（L2 瞬时通知，用于 UI 即时反馈）
+    HookEvent,
 }
 
 /// 审批状态
@@ -165,6 +221,8 @@ pub enum Event {
     SessionEnd {
         session_id: String,
     },
+    /// Hook 事件（L2 瞬时通知）
+    HookEvent(HookEvent),
 }
 
 impl Event {
@@ -174,6 +232,7 @@ impl Event {
             Event::NewMessages { .. } => EventType::NewMessage,
             Event::SessionStart { .. } => EventType::SessionStart,
             Event::SessionEnd { .. } => EventType::SessionEnd,
+            Event::HookEvent(_) => EventType::HookEvent,
         }
     }
 
@@ -201,6 +260,161 @@ impl Event {
             Event::SessionEnd { session_id } => Push::SessionEnd {
                 session_id: session_id.clone(),
             },
+            Event::HookEvent(hook_event) => Push::HookEvent(hook_event.clone()),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_hook_event_serialize_minimal() {
+        // 最小 HookEvent（只有必填字段）
+        let event = HookEvent {
+            event_type: "SessionStart".to_string(),
+            session_id: "test-session-123".to_string(),
+            transcript_path: None,
+            cwd: None,
+            prompt: None,
+            tool_name: None,
+            tool_input: None,
+            tool_use_id: None,
+            notification_type: None,
+            message: None,
+        };
+
+        let json = serde_json::to_string(&event).unwrap();
+        assert!(json.contains("\"event_type\":\"SessionStart\""));
+        assert!(json.contains("\"session_id\":\"test-session-123\""));
+        // 可选字段应被跳过
+        assert!(!json.contains("transcript_path"));
+        assert!(!json.contains("cwd"));
+    }
+
+    #[test]
+    fn test_hook_event_serialize_full() {
+        // 完整 HookEvent（PermissionRequest 场景）
+        let event = HookEvent {
+            event_type: "PermissionRequest".to_string(),
+            session_id: "test-session-456".to_string(),
+            transcript_path: Some("/path/to/transcript.jsonl".to_string()),
+            cwd: Some("/Users/test/project".to_string()),
+            prompt: None,
+            tool_name: Some("Bash".to_string()),
+            tool_input: Some(serde_json::json!({"command": "ls -la"})),
+            tool_use_id: Some("tool-123".to_string()),
+            notification_type: None,
+            message: None,
+        };
+
+        let json = serde_json::to_string(&event).unwrap();
+        assert!(json.contains("\"tool_name\":\"Bash\""));
+        assert!(json.contains("\"tool_use_id\":\"tool-123\""));
+    }
+
+    #[test]
+    fn test_hook_event_deserialize() {
+        // 从 claude_hook.sh 发送的 JSON
+        let json = r#"{
+            "type": "HookEvent",
+            "event_type": "UserPromptSubmit",
+            "session_id": "abc-123",
+            "transcript_path": "/path/to/file.jsonl",
+            "cwd": "/Users/test",
+            "prompt": "Hello, Claude!"
+        }"#;
+
+        let request: Request = serde_json::from_str(json).unwrap();
+        match request {
+            Request::HookEvent(event) => {
+                assert_eq!(event.event_type, "UserPromptSubmit");
+                assert_eq!(event.session_id, "abc-123");
+                assert_eq!(event.prompt, Some("Hello, Claude!".to_string()));
+            }
+            _ => panic!("Expected HookEvent"),
+        }
+    }
+
+    #[test]
+    fn test_hook_event_deserialize_unknown_fields() {
+        // 未来 Claude Code 可能新增字段，应能正常解析
+        let json = r#"{
+            "type": "HookEvent",
+            "event_type": "FutureEvent",
+            "session_id": "xyz-789",
+            "new_field": "should be ignored"
+        }"#;
+
+        let request: Request = serde_json::from_str(json).unwrap();
+        match request {
+            Request::HookEvent(event) => {
+                assert_eq!(event.event_type, "FutureEvent");
+                assert_eq!(event.session_id, "xyz-789");
+            }
+            _ => panic!("Expected HookEvent"),
+        }
+    }
+
+    #[test]
+    fn test_event_type_hook_event() {
+        let hook_event = HookEvent {
+            event_type: "Stop".to_string(),
+            session_id: "test".to_string(),
+            transcript_path: None,
+            cwd: None,
+            prompt: None,
+            tool_name: None,
+            tool_input: None,
+            tool_use_id: None,
+            notification_type: None,
+            message: None,
+        };
+
+        let event = Event::HookEvent(hook_event.clone());
+        assert_eq!(event.event_type(), EventType::HookEvent);
+
+        // to_push 转换
+        let push = event.to_push();
+        match push {
+            Push::HookEvent(e) => {
+                assert_eq!(e.event_type, "Stop");
+                assert_eq!(e.session_id, "test");
+            }
+            _ => panic!("Expected Push::HookEvent"),
+        }
+    }
+
+    #[test]
+    fn test_push_hook_event_serialize() {
+        let hook_event = HookEvent {
+            event_type: "SessionEnd".to_string(),
+            session_id: "test-session".to_string(),
+            transcript_path: Some("/path/to/file.jsonl".to_string()),
+            cwd: None,
+            prompt: None,
+            tool_name: None,
+            tool_input: None,
+            tool_use_id: None,
+            notification_type: None,
+            message: None,
+        };
+
+        let push = Push::HookEvent(hook_event);
+        let json = serde_json::to_string(&push).unwrap();
+
+        assert!(json.contains("\"type\":\"HookEvent\""));
+        assert!(json.contains("\"event_type\":\"SessionEnd\""));
+    }
+
+    #[test]
+    fn test_event_type_subscribe() {
+        // 验证 HookEvent 可以被订阅
+        let events = vec![EventType::NewMessage, EventType::HookEvent];
+        let request = Request::Subscribe { events };
+        let json = serde_json::to_string(&request).unwrap();
+
+        assert!(json.contains("\"HookEvent\""));
     }
 }
