@@ -480,9 +480,12 @@ fn extract_encoded_dir_name(path: &str) -> Option<String> {
         .map(|s| s.to_string())
 }
 
-/// 从路径提取项目名
+/// 从路径提取项目名（跨平台）
 fn extract_project_name(path: &str) -> &str {
-    path.rsplit('/').find(|s| !s.is_empty()).unwrap_or(path)
+    std::path::Path::new(path)
+        .file_name()
+        .and_then(|s| s.to_str())
+        .unwrap_or(path)
 }
 
 #[cfg(test)]

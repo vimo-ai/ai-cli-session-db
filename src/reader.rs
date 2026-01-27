@@ -104,10 +104,10 @@ impl SessionReader {
         }
     }
 
-    /// 使用默认路径创建读取器
+    /// 使用默认路径创建读取器（跨平台）
     pub fn with_default_path() -> Option<Self> {
-        let home = std::env::var("HOME").ok()?;
-        let projects_path = PathBuf::from(home).join(".claude/projects");
+        let home = dirs::home_dir()?;
+        let projects_path = home.join(".claude/projects");
         Some(Self::new(projects_path))
     }
 
