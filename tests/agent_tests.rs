@@ -201,6 +201,7 @@ mod tests {
             tool_use_id: None,
             notification_type: None,
             message: None,
+            context: Some(serde_json::json!({"terminal_id": 42})),
         };
         let request = Request::HookEvent(hook_event);
         writer
@@ -279,6 +280,7 @@ mod tests {
             tool_use_id: None,
             notification_type: None,
             message: None,
+            context: Some(serde_json::json!({"terminal_id": 123})),
         };
         let request = Request::HookEvent(hook_event.clone());
         writer

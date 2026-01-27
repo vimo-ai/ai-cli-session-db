@@ -39,6 +39,12 @@ pub struct HookEvent {
     /// 通知消息（Notification 事件）
     #[serde(skip_serializing_if = "Option::is_none")]
     pub message: Option<String>,
+    /// 事件上下文（来源特定数据，vimo-agent 透传不解析）
+    ///
+    /// 用于携带消费者特定的数据，如 ETerm 的 terminal_id。
+    /// vimo-agent 只负责透传，不解析内容。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub context: Option<serde_json::Value>,
 }
 
 /// 已知的 Hook 事件类型常量
@@ -283,6 +289,7 @@ mod tests {
             tool_use_id: None,
             notification_type: None,
             message: None,
+            context: None,
         };
 
         let json = serde_json::to_string(&event).unwrap();
@@ -291,6 +298,7 @@ mod tests {
         // 可选字段应被跳过
         assert!(!json.contains("transcript_path"));
         assert!(!json.contains("cwd"));
+        assert!(!json.contains("context"));
     }
 
     #[test]
@@ -307,6 +315,7 @@ mod tests {
             tool_use_id: Some("tool-123".to_string()),
             notification_type: None,
             message: None,
+            context: None,
         };
 
         let json = serde_json::to_string(&event).unwrap();
@@ -370,6 +379,7 @@ mod tests {
             tool_use_id: None,
             notification_type: None,
             message: None,
+            context: None,
         };
 
         let event = Event::HookEvent(hook_event.clone());
@@ -399,6 +409,7 @@ mod tests {
             tool_use_id: None,
             notification_type: None,
             message: None,
+            context: None,
         };
 
         let push = Push::HookEvent(hook_event);
@@ -416,5 +427,88 @@ mod tests {
         let json = serde_json::to_string(&request).unwrap();
 
         assert!(json.contains("\"HookEvent\""));
+    }
+
+    #[test]
+    fn test_hook_event_with_context() {
+        // ETerm 场景：context 包含 terminal_id
+        let event = HookEvent {
+            event_type: "SessionStart".to_string(),
+            session_id: "abc-123".to_string(),
+            transcript_path: Some("/path/to/file.jsonl".to_string()),
+            cwd: Some("/Users/test/project".to_string()),
+            prompt: None,
+            tool_name: None,
+            tool_input: None,
+            tool_use_id: None,
+            notification_type: None,
+            message: None,
+            context: Some(serde_json::json!({"terminal_id": 5})),
+        };
+
+        let json = serde_json::to_string(&event).unwrap();
+        assert!(json.contains("\"context\":{\"terminal_id\":5}"));
+
+        // 反序列化验证
+        let parsed: HookEvent = serde_json::from_str(&json).unwrap();
+        assert_eq!(parsed.context.unwrap()["terminal_id"], 5);
+    }
+
+    #[test]
+    fn test_hook_event_deserialize_with_context() {
+        // 从 claude_hook.sh 发送的带 context 的 JSON
+        let json = r#"{
+            "type": "HookEvent",
+            "event_type": "SessionStart",
+            "session_id": "abc-123",
+            "transcript_path": "/path/to/file.jsonl",
+            "context": {"terminal_id": 123, "extra_field": "value"}
+        }"#;
+
+        let request: Request = serde_json::from_str(json).unwrap();
+        match request {
+            Request::HookEvent(event) => {
+                assert_eq!(event.event_type, "SessionStart");
+                assert_eq!(event.session_id, "abc-123");
+                let ctx = event.context.unwrap();
+                assert_eq!(ctx["terminal_id"], 123);
+                assert_eq!(ctx["extra_field"], "value");
+            }
+            _ => panic!("Expected HookEvent"),
+        }
+    }
+
+    #[test]
+    fn test_hook_event_context_transparent() {
+        // vimo-agent 透传 context，不解析内容
+        let hook_event = HookEvent {
+            event_type: "Stop".to_string(),
+            session_id: "test".to_string(),
+            transcript_path: None,
+            cwd: None,
+            prompt: None,
+            tool_name: None,
+            tool_input: None,
+            tool_use_id: None,
+            notification_type: None,
+            message: None,
+            context: Some(serde_json::json!({
+                "terminal_id": 42,
+                "custom_data": {"nested": true}
+            })),
+        };
+
+        // Event → Push 转换应保留 context
+        let event = Event::HookEvent(hook_event);
+        let push = event.to_push();
+
+        match push {
+            Push::HookEvent(e) => {
+                let ctx = e.context.unwrap();
+                assert_eq!(ctx["terminal_id"], 42);
+                assert_eq!(ctx["custom_data"]["nested"], true);
+            }
+            _ => panic!("Expected Push::HookEvent"),
+        }
     }
 }
