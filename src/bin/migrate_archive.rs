@@ -3,6 +3,7 @@
 //! 从 Archive 目录读取 JSONL 文件，使用新的内容分离逻辑导入到数据库
 
 use ai_cli_session_collector::{ClaudeAdapter, IndexableSession};
+use ai_cli_session_db::{migrations, schema};
 use anyhow::Result;
 use rusqlite::{params, Connection};
 use std::collections::HashSet;
@@ -14,7 +15,7 @@ fn main() -> Result<()> {
     if args.len() < 3 {
         eprintln!("Usage: {} <database_path> <JSONL_dir_or_file>...", args[0]);
         eprintln!(
-            "例: {} ~/.vimo/db/ai-cli-session-v2.db ~/memex-data/archive/2025/12/",
+            "例: {} ~/.vimo/db/ai-cli-session.db ~/.vimo/db/archive/2025/12/",
             args[0]
         );
         std::process::exit(1);
@@ -26,6 +27,16 @@ fn main() -> Result<()> {
     println!("Target database: {}", db_path);
 
     let mut conn = Connection::open(db_path)?;
+
+    // 初始化数据库（新数据库需要）
+    conn.execute_batch(
+        "PRAGMA journal_mode=WAL;
+         PRAGMA synchronous=NORMAL;
+         PRAGMA busy_timeout=5000;",
+    )?;
+    migrations::run_migrations(&conn)?;
+    let full_schema = schema::full_schema(true);
+    conn.execute_batch(&full_schema)?;
 
     // 获取已有的 uuid 集合（用于跳过已存在的消息）
     let existing_uuids = get_existing_uuids(&conn)?;

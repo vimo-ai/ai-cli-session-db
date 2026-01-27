@@ -35,7 +35,7 @@ impl SessionDB {
         let checkpoint = self.get_scan_checkpoint(session_id)?;
 
         // 过滤需要处理的消息
-        let messages_to_process: Vec<_> = match checkpoint {
+        let mut messages_to_process: Vec<_> = match checkpoint {
             Some(last_ts) => {
                 // 增量扫描：回退安全边界
                 let cutoff = last_ts.saturating_sub(SAFETY_MARGIN_MS);
@@ -52,6 +52,15 @@ impl SessionDB {
 
         if messages_to_process.is_empty() {
             return Ok(0);
+        }
+
+        // 获取当前最大 sequence，确保增量写入时 sequence 正确递增
+        let max_sequence = self.get_session_max_sequence(session_id)?.unwrap_or(-1);
+        let start_sequence = max_sequence + 1;
+
+        // 重新设置 sequence，从 max+1 开始
+        for (i, msg) in messages_to_process.iter_mut().enumerate() {
+            msg.sequence = start_sequence + i as i64;
         }
 
         // 写入
@@ -75,6 +84,7 @@ pub fn convert_message(
         ai_cli_session_collector::MessageType::User => MessageType::User,
         ai_cli_session_collector::MessageType::Assistant => MessageType::Assistant,
         ai_cli_session_collector::MessageType::Tool => MessageType::Tool,
+        ai_cli_session_collector::MessageType::System => MessageType::System,
     };
 
     // 解析时间戳 (ISO 8601 -> 毫秒)
@@ -106,9 +116,24 @@ pub fn convert_message(
 
 /// 批量转换消息
 pub fn convert_messages(messages: &[ai_cli_session_collector::ParsedMessage]) -> Vec<MessageInput> {
+    convert_messages_with_start_sequence(messages, 0)
+}
+
+/// 批量转换消息（支持指定起始 sequence）
+///
+/// # 参数
+/// - `messages`: 要转换的消息列表
+/// - `start_sequence`: 起始 sequence 值
+///
+/// # 返回
+/// 转换后的 MessageInput 列表，sequence 从 start_sequence 开始递增
+pub fn convert_messages_with_start_sequence(
+    messages: &[ai_cli_session_collector::ParsedMessage],
+    start_sequence: i64,
+) -> Vec<MessageInput> {
     messages
         .iter()
         .enumerate()
-        .map(|(i, m)| convert_message(m, i as i64))
+        .map(|(i, m)| convert_message(m, start_sequence + i as i64))
         .collect()
 }

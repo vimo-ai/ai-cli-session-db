@@ -516,6 +516,146 @@ mod incremental_scan_tests {
         // uuid-2 的 timestamp = 970000 > 940000，所以会被处理并插入
         assert_eq!(inserted, 1);
     }
+
+    #[test]
+    fn test_incremental_scan_sequence_increment() {
+        let (db, _tmp) = setup_db();
+
+        let project_id = db.get_or_create_project("test", "/path", "claude").unwrap();
+
+        // 第一批：插入 3 条消息 (sequence 0, 1, 2)
+        let messages1: Vec<MessageInput> = (0..3)
+            .map(|i| MessageInput {
+                uuid: format!("uuid-{}", i),
+                r#type: MessageType::User,
+                content_text: format!("Message {}", i),
+                content_full: format!("Message {}", i),
+                timestamp: 1000000 + i as i64 * 1000,
+                sequence: i as i64, // 初始 sequence
+                source: None,
+                channel: None,
+                model: None,
+                tool_call_id: None,
+                tool_name: None,
+                tool_args: None,
+                raw: None,
+                approval_status: None,
+                approval_resolved_at: None,
+            })
+            .collect();
+
+        let inserted1 = db
+            .scan_session_incremental("session-001", project_id, messages1)
+            .unwrap();
+        assert_eq!(inserted1, 3);
+
+        // 验证第一批的 sequence
+        let batch1 = db.list_messages("session-001", 100, 0).unwrap();
+        assert_eq!(batch1.len(), 3);
+        assert_eq!(batch1[0].sequence, 0);
+        assert_eq!(batch1[1].sequence, 1);
+        assert_eq!(batch1[2].sequence, 2);
+
+        // 第二批：增量插入 2 条新消息（模拟从 JSONL 读取，sequence 会从 0 开始）
+        let messages2: Vec<MessageInput> = (3..5)
+            .map(|i| MessageInput {
+                uuid: format!("uuid-{}", i),
+                r#type: MessageType::User,
+                content_text: format!("Message {}", i),
+                content_full: format!("Message {}", i),
+                timestamp: 1000000 + i as i64 * 1000,
+                sequence: (i - 3) as i64, // 这里故意从 0 开始，模拟原始 bug
+                source: None,
+                channel: None,
+                model: None,
+                tool_call_id: None,
+                tool_name: None,
+                tool_args: None,
+                raw: None,
+                approval_status: None,
+                approval_resolved_at: None,
+            })
+            .collect();
+
+        let inserted2 = db
+            .scan_session_incremental("session-001", project_id, messages2)
+            .unwrap();
+        assert_eq!(inserted2, 2);
+
+        // 验证所有消息的 sequence 正确递增
+        let all = db.list_messages("session-001", 100, 0).unwrap();
+        assert_eq!(all.len(), 5);
+
+        // 关键断言：增量写入后，新消息的 sequence 应该从 3 开始，而不是重置为 0
+        assert_eq!(all[0].sequence, 0);
+        assert_eq!(all[1].sequence, 1);
+        assert_eq!(all[2].sequence, 2);
+        assert_eq!(all[3].sequence, 3); // 应该是 3，而不是 0
+        assert_eq!(all[4].sequence, 4); // 应该是 4，而不是 1
+
+        // 验证内容
+        assert_eq!(all[3].content_text, "Message 3");
+        assert_eq!(all[4].content_text, "Message 4");
+    }
+
+    #[test]
+    fn test_get_session_max_sequence() {
+        let (db, _tmp) = setup_db();
+
+        let project_id = db.get_or_create_project("test", "/path", "claude").unwrap();
+        db.upsert_session("session-001", project_id).unwrap();
+
+        // 空 session 应该返回 None
+        let max_seq = db.get_session_max_sequence("session-001").unwrap();
+        assert_eq!(max_seq, None);
+
+        // 插入消息
+        let messages = vec![
+            MessageInput {
+                uuid: "uuid-1".to_string(),
+                r#type: MessageType::User,
+                content_text: "First".to_string(),
+                content_full: "First".to_string(),
+                timestamp: 1000,
+                sequence: 0,
+                source: None,
+                channel: None,
+                model: None,
+                tool_call_id: None,
+                tool_name: None,
+                tool_args: None,
+                raw: None,
+                approval_status: None,
+                approval_resolved_at: None,
+            },
+            MessageInput {
+                uuid: "uuid-2".to_string(),
+                r#type: MessageType::User,
+                content_text: "Second".to_string(),
+                content_full: "Second".to_string(),
+                timestamp: 2000,
+                sequence: 1,
+                source: None,
+                channel: None,
+                model: None,
+                tool_call_id: None,
+                tool_name: None,
+                tool_args: None,
+                raw: None,
+                approval_status: None,
+                approval_resolved_at: None,
+            },
+        ];
+        db.insert_messages("session-001", &messages).unwrap();
+
+        // 应该返回最大的 sequence
+        let max_seq = db.get_session_max_sequence("session-001").unwrap();
+        assert_eq!(max_seq, Some(1));
+
+        // 不存在的 session 应该返回 None
+        let max_seq = db.get_session_max_sequence("nonexistent").unwrap();
+        assert_eq!(max_seq, None);
+    }
 }
 
 // ==================== 搜索测试 ====================

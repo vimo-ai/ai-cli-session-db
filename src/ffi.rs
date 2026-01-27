@@ -540,6 +540,7 @@ pub unsafe extern "C" fn session_db_insert_messages(
                 0 => MessageType::User,
                 1 => MessageType::Assistant,
                 2 => MessageType::Tool,
+                3 => MessageType::System,
                 _ => return Err(FfiError::Unknown),
             };
 
@@ -651,6 +652,7 @@ pub unsafe extern "C" fn session_db_list_messages(
                     MessageType::User => 0,
                     MessageType::Assistant => 1,
                     MessageType::Tool => 2,
+                    MessageType::System => 3,
                 };
 
                 let raw = match m.raw {
@@ -2278,6 +2280,7 @@ pub unsafe extern "C" fn session_db_read_session_messages(
                     ai_cli_session_collector::MessageType::User => 0,
                     ai_cli_session_collector::MessageType::Assistant => 1,
                     ai_cli_session_collector::MessageType::Tool => 2,
+                    ai_cli_session_collector::MessageType::System => 3,
                 };
 
                 c_messages.push(ParsedMessageC {
