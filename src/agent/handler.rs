@@ -2,12 +2,12 @@
 //!
 //! 处理来自客户端的各类请求
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use super::broadcaster::{Broadcaster, ConnId};
 use super::watcher::FileWatcher;
-use crate::protocol::{QueryType, Request, Response};
+use crate::protocol::{Event, HookEvent, QueryType, Request, Response};
 use crate::SessionDB;
 
 /// Agent 版本号（跟随 crate 版本）
@@ -90,6 +90,10 @@ impl Handler {
 
             Request::Query { query_type } => {
                 self.handle_query(query_type)
+            }
+
+            Request::HookEvent(hook_event) => {
+                self.handle_hook_event(hook_event).await
             }
         }
     }
@@ -207,5 +211,35 @@ impl Handler {
                 }
             }
         }
+    }
+
+    /// 处理 Hook 事件
+    ///
+    /// 1. 如果有 transcript_path，触发即时 Collection
+    /// 2. 广播 HookEvent 给订阅者（用于 UI 即时反馈）
+    async fn handle_hook_event(&self, event: HookEvent) -> Response {
+        tracing::debug!(
+            "🪝 HookEvent: type={}, session_id={}",
+            event.event_type,
+            event.session_id
+        );
+
+        // 如果有 transcript_path，触发即时 Collection
+        if let Some(ref path_str) = event.transcript_path {
+            let path = Path::new(path_str);
+            if path.exists() {
+                if let Err(e) = self.watcher.trigger_collect(path).await {
+                    tracing::warn!("HookEvent collection failed: {}", e);
+                    // 不返回错误，继续广播事件
+                }
+            } else {
+                tracing::debug!("HookEvent transcript_path not found: {}", path_str);
+            }
+        }
+
+        // 广播 HookEvent 给订阅者
+        self.broadcaster.broadcast(Event::HookEvent(event)).await;
+
+        Response::Ok
     }
 }
