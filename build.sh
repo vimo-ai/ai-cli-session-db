@@ -58,6 +58,7 @@ log_success "Built: $DYLIB"
 if [ "$DEPLOY" = true ] && [ -n "$ETERM_DIR" ]; then
     VLAUDE_KIT="$ETERM_DIR/Plugins/VlaudeKit"
     MEMEX_KIT="$ETERM_DIR/Plugins/MemexKit"
+    AICLI_KIT="$ETERM_DIR/Plugins/AICliKit"
 
     log_info "Deploying to VlaudeKit..."
     mkdir -p "$VLAUDE_KIT/Libs/SharedDB"
@@ -68,6 +69,11 @@ if [ "$DEPLOY" = true ] && [ -n "$ETERM_DIR" ]; then
     mkdir -p "$MEMEX_KIT/Libs/SharedDB"
     cp "$DYLIB" "$MEMEX_KIT/Libs/SharedDB/"
     [ -f "$HEADER" ] && cp "$HEADER" "$MEMEX_KIT/Libs/SharedDB/"
+
+    log_info "Deploying to AICliKit..."
+    mkdir -p "$AICLI_KIT/Libs/SharedDB"
+    cp "$DYLIB" "$AICLI_KIT/Libs/SharedDB/"
+    [ -f "$HEADER" ] && cp "$HEADER" "$AICLI_KIT/Libs/SharedDB/"
 
     log_success "Deployed to Swift plugins"
 elif [ "$DEPLOY" = true ]; then
