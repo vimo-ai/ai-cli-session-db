@@ -88,6 +88,7 @@ jobs:
           shared-key: ${{ matrix.target }}
 
       - name: Set version from tag
+        if: startsWith(github.ref, 'refs/tags/v')
         run: |
           VERSION=${GITHUB_REF#refs/tags/v}
           sed -i.bak "s/^version = .*/version = \"$VERSION\"/" Cargo.toml
@@ -191,6 +192,7 @@ jobs:
           shared-key: ${{ matrix.target }}-dylib
 
       - name: Set version from tag
+        if: startsWith(github.ref, 'refs/tags/v')
         run: |
           VERSION=${GITHUB_REF#refs/tags/v}
           sed -i.bak "s/^version = .*/version = \"$VERSION\"/" Cargo.toml
