@@ -8,7 +8,6 @@ use crate::{
     all_adapters, ConversationAdapter, FileIdentity, IncrementalAdapter, ReaderState, SessionMeta,
 };
 use anyhow::Result;
-use std::os::unix::fs::MetadataExt;
 use std::path::Path;
 use std::sync::Arc;
 
@@ -253,7 +252,14 @@ impl<'a> Collector<'a> {
             .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
             .map(|d| d.as_millis() as i64);
         let file_size = file_metadata.len() as i64;
-        let file_inode = file_metadata.ino() as i64;
+        // 跨平台文件标识：Unix 用 inode，Windows 用 file_index
+        let file_inode = file_id::get_file_id(file_path)
+            .map(|id| match id {
+                file_id::FileId::Inode { inode_number, .. } => inode_number as i64,
+                file_id::FileId::LowRes { file_index, .. } => file_index as i64,
+                file_id::FileId::HighRes { file_id, .. } => file_id as i64,
+            })
+            .unwrap_or(0);
 
         // 从路径提取 encoded_dir_name
         let encoded_dir_name = extract_encoded_dir_name(path);

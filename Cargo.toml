@@ -47,8 +47,15 @@ uuid = { version = "1", features = ["v4"] }
 chrono = { version = "0.4", features = ["serde"] }
 dirs = "5"
 parking_lot = "0.12"
-libc = "0.2"
 native-tls = "0.2"
+
+# 跨平台支持
+interprocess = { version = "2.2", features = ["tokio"] }  # IPC: Unix Socket / Named Pipe
+sysinfo = "0.32"                                           # 进程检测
+file-id = "0.2"                                            # 文件标识 (inode/file_index)
+
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
 
 [[bin]]
 name = "migrate_archive"
