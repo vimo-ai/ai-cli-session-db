@@ -87,6 +87,13 @@ jobs:
         with:
           shared-key: ${{ matrix.target }}
 
+      - name: Set version from tag
+        run: |
+          VERSION=${GITHUB_REF#refs/tags/v}
+          sed -i.bak "s/^version = .*/version = \"$VERSION\"/" Cargo.toml
+          rm -f Cargo.toml.bak
+          echo "Set version to $VERSION"
+
       - name: Build vimo-agent
         run: cargo build --release --bin vimo-agent --features agent --target ${{ matrix.target }}
 
@@ -182,6 +189,13 @@ jobs:
         uses: Swatinem/rust-cache@v2
         with:
           shared-key: ${{ matrix.target }}-dylib
+
+      - name: Set version from tag
+        run: |
+          VERSION=${GITHUB_REF#refs/tags/v}
+          sed -i.bak "s/^version = .*/version = \"$VERSION\"/" Cargo.toml
+          rm -f Cargo.toml.bak
+          echo "Set version to $VERSION"
 
       - name: Build dylib
         run: cargo build --release --features ffi,fts,client --target ${{ matrix.target }}
