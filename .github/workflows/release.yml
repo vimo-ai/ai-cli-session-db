@@ -1,9 +1,9 @@
 # ai-cli-session-db Release CI
 #
-# Triggered on tag push (v*)
-# Builds for macOS arm64:
-#   - libai_cli_session_db.dylib (FFI library)
-#   - vimo-agent (Agent binary)
+# Triggered on tag push (v*) or manual dispatch
+# Builds for multiple platforms:
+#   - vimo-agent (Agent binary) - all platforms
+#   - libai_cli_session_db.dylib (FFI library) - macOS only
 # Uploads to GitHub Release with sha256 checksums
 
 name: Release
@@ -23,134 +23,273 @@ env:
   CARGO_TERM_COLOR: always
 
 jobs:
-  build-macos:
-    runs-on: macos-14  # Apple Silicon runner
+  # Build vimo-agent for all platforms
+  build-agent:
+    name: Build Agent (${{ matrix.name }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: macOS arm64
+            os: macos-14
+            target: aarch64-apple-darwin
+            artifact: vimo-agent-darwin-arm64
+            ext: ""
+          - name: macOS x64
+            os: macos-15-intel
+            target: x86_64-apple-darwin
+            artifact: vimo-agent-darwin-x64
+            ext: ""
+          - name: Linux x64
+            os: ubuntu-latest
+            target: x86_64-unknown-linux-gnu
+            artifact: vimo-agent-linux-x64
+            ext: ""
+          - name: Linux arm64
+            os: ubuntu-24.04-arm
+            target: aarch64-unknown-linux-gnu
+            artifact: vimo-agent-linux-arm64
+            ext: ""
+          - name: Windows x64
+            os: windows-latest
+            target: x86_64-pc-windows-msvc
+            artifact: vimo-agent-windows-x64
+            ext: ".exe"
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Checkout ai-cli-session-collector
+        uses: actions/checkout@v4
+        with:
+          repository: vimo-ai/ai-cli-session-collector
+          path: deps/ai-cli-session-collector
+
+      - name: Create symlinks (Unix)
+        if: runner.os != 'Windows'
+        run: |
+          ln -s $GITHUB_WORKSPACE/deps/ai-cli-session-collector $GITHUB_WORKSPACE/../ai-cli-session-collector
+
+      - name: Create symlinks (Windows)
+        if: runner.os == 'Windows'
+        shell: cmd
+        run: |
+          mklink /D "%GITHUB_WORKSPACE%\..\ai-cli-session-collector" "%GITHUB_WORKSPACE%\deps\ai-cli-session-collector"
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: ${{ matrix.target }}
+
+      - name: Build vimo-agent
+        run: cargo build --release --bin vimo-agent --features agent --target ${{ matrix.target }}
+
+      - name: Prepare artifact (Unix)
+        if: runner.os != 'Windows'
+        run: |
+          BINARY="target/${{ matrix.target }}/release/vimo-agent"
+          cp "$BINARY" ${{ matrix.artifact }}
+          chmod +x ${{ matrix.artifact }}
+
+          # Strip on Linux
+          if [[ "${{ runner.os }}" == "Linux" ]]; then
+            strip ${{ matrix.artifact }}
+          fi
+
+          # Sign on macOS
+          if [[ "${{ runner.os }}" == "macOS" ]]; then
+            codesign -f -s - ${{ matrix.artifact }}
+          fi
+
+          # Checksum
+          shasum -a 256 ${{ matrix.artifact }} > ${{ matrix.artifact }}.sha256
+
+          # Summary
+          SIZE=$(stat -f%z "${{ matrix.artifact }}" 2>/dev/null || stat -c%s "${{ matrix.artifact }}")
+          SIZE_MB=$(echo "scale=2; $SIZE / 1048576" | bc)
+          SHA256=$(cat ${{ matrix.artifact }}.sha256 | cut -d' ' -f1)
+          echo "### ${{ matrix.name }}" >> $GITHUB_STEP_SUMMARY
+          echo "- **Size**: ${SIZE_MB}MB" >> $GITHUB_STEP_SUMMARY
+          echo "- **SHA256**: \`$SHA256\`" >> $GITHUB_STEP_SUMMARY
+
+      - name: Prepare artifact (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $binary = "target/${{ matrix.target }}/release/vimo-agent.exe"
+          Copy-Item $binary -Destination "${{ matrix.artifact }}${{ matrix.ext }}"
+
+          $hash = (Get-FileHash -Algorithm SHA256 "${{ matrix.artifact }}${{ matrix.ext }}").Hash.ToLower()
+          "$hash  ${{ matrix.artifact }}${{ matrix.ext }}" | Out-File -Encoding ASCII "${{ matrix.artifact }}${{ matrix.ext }}.sha256"
+
+          $size = (Get-Item "${{ matrix.artifact }}${{ matrix.ext }}").Length
+          $sizeMB = [math]::Round($size / 1MB, 2)
+          echo "### ${{ matrix.name }}" >> $env:GITHUB_STEP_SUMMARY
+          echo "- **Size**: ${sizeMB}MB" >> $env:GITHUB_STEP_SUMMARY
+          echo "- **SHA256**: ``$hash``" >> $env:GITHUB_STEP_SUMMARY
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.artifact }}
+          path: |
+            ${{ matrix.artifact }}${{ matrix.ext }}
+            ${{ matrix.artifact }}${{ matrix.ext }}.sha256
+          retention-days: 7
+
+  # Build FFI dylib for macOS only (for ETerm Swift integration)
+  build-dylib:
+    name: Build dylib (${{ matrix.name }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: macOS arm64
+            os: macos-14
+            target: aarch64-apple-darwin
+            artifact: libai_cli_session_db-darwin-arm64.dylib
+          - name: macOS x64
+            os: macos-15-intel
+            target: x86_64-apple-darwin
+            artifact: libai_cli_session_db-darwin-x64.dylib
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Checkout ai-cli-session-collector
+        uses: actions/checkout@v4
+        with:
+          repository: vimo-ai/ai-cli-session-collector
+          path: deps/ai-cli-session-collector
+
+      - name: Create symlinks
+        run: |
+          ln -s $GITHUB_WORKSPACE/deps/ai-cli-session-collector $GITHUB_WORKSPACE/../ai-cli-session-collector
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: ${{ matrix.target }}-dylib
+
+      - name: Build dylib
+        run: cargo build --release --features ffi,fts,client --target ${{ matrix.target }}
+
+      - name: Prepare artifact
+        run: |
+          DYLIB="target/${{ matrix.target }}/release/libai_cli_session_db.dylib"
+          cp "$DYLIB" ${{ matrix.artifact }}
+          codesign -f -s - ${{ matrix.artifact }}
+          shasum -a 256 ${{ matrix.artifact }} > ${{ matrix.artifact }}.sha256
+
+          SIZE=$(stat -f%z "${{ matrix.artifact }}")
+          SIZE_MB=$(echo "scale=2; $SIZE / 1048576" | bc)
+          SHA256=$(cat ${{ matrix.artifact }}.sha256 | cut -d' ' -f1)
+          echo "### ${{ matrix.name }} dylib" >> $GITHUB_STEP_SUMMARY
+          echo "- **Size**: ${SIZE_MB}MB" >> $GITHUB_STEP_SUMMARY
+          echo "- **SHA256**: \`$SHA256\`" >> $GITHUB_STEP_SUMMARY
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.artifact }}
+          path: |
+            ${{ matrix.artifact }}
+            ${{ matrix.artifact }}.sha256
+          retention-days: 7
+
+  # Create GitHub Release
+  release:
+    name: Create Release
+    runs-on: ubuntu-latest
+    needs: [build-agent, build-dylib]
+    if: startsWith(github.ref, 'refs/tags/v') && (github.event.inputs.dry_run != 'true')
     permissions:
       contents: write
 
     steps:
       - uses: actions/checkout@v4
 
-      - name: Setup Rust
-        uses: dtolnay/rust-toolchain@stable
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
         with:
-          targets: aarch64-apple-darwin
+          path: artifacts
 
-      - name: Build release
+      - name: Prepare release files
         run: |
-          # Build FFI dylib
-          cargo build --release --features ffi,fts,client
+          mkdir -p release
+          for dir in artifacts/*/; do
+            cp "$dir"* release/ 2>/dev/null || true
+          done
+          # Also include header file
+          cp include/ai_cli_session_db.h release/
+          ls -la release/
 
-          # Build vimo-agent binary
-          cargo build --release --bin vimo-agent --features agent
-
-      - name: Get dylib info
-        id: dylib
-        run: |
-          DYLIB_PATH="target/release/libai_cli_session_db.dylib"
-
-          # Get size
-          SIZE=$(stat -f%z "$DYLIB_PATH")
-          SIZE_MB=$(echo "scale=2; $SIZE / 1048576" | bc)
-
-          # Get sha256
-          SHA256=$(shasum -a 256 "$DYLIB_PATH" | cut -d' ' -f1)
-
-          # Get version from tag
-          VERSION=${GITHUB_REF#refs/tags/v}
-
-          echo "path=$DYLIB_PATH" >> $GITHUB_OUTPUT
-          echo "size=$SIZE" >> $GITHUB_OUTPUT
-          echo "size_mb=$SIZE_MB" >> $GITHUB_OUTPUT
-          echo "sha256=$SHA256" >> $GITHUB_OUTPUT
-          echo "version=$VERSION" >> $GITHUB_OUTPUT
-
-          echo "### dylib Build Summary" >> $GITHUB_STEP_SUMMARY
-          echo "- **Version**: $VERSION" >> $GITHUB_STEP_SUMMARY
-          echo "- **Size**: ${SIZE_MB}MB" >> $GITHUB_STEP_SUMMARY
-          echo "- **SHA256**: \`$SHA256\`" >> $GITHUB_STEP_SUMMARY
-
-      - name: Get agent info
-        id: agent
-        run: |
-          AGENT_PATH="target/release/vimo-agent"
-
-          # Get size
-          SIZE=$(stat -f%z "$AGENT_PATH")
-          SIZE_MB=$(echo "scale=2; $SIZE / 1048576" | bc)
-
-          # Get sha256
-          SHA256=$(shasum -a 256 "$AGENT_PATH" | cut -d' ' -f1)
-
-          echo "path=$AGENT_PATH" >> $GITHUB_OUTPUT
-          echo "size=$SIZE" >> $GITHUB_OUTPUT
-          echo "size_mb=$SIZE_MB" >> $GITHUB_OUTPUT
-          echo "sha256=$SHA256" >> $GITHUB_OUTPUT
-
-          echo "### vimo-agent Build Summary" >> $GITHUB_STEP_SUMMARY
-          echo "- **Size**: ${SIZE_MB}MB" >> $GITHUB_STEP_SUMMARY
-          echo "- **SHA256**: \`$SHA256\`" >> $GITHUB_STEP_SUMMARY
-
-      - name: Create checksum files
-        run: |
-          cd target/release
-          shasum -a 256 libai_cli_session_db.dylib > libai_cli_session_db.dylib.sha256
-          shasum -a 256 vimo-agent > vimo-agent.sha256
-
-      - name: Sign binaries (ad-hoc)
-        run: |
-          codesign -f -s - target/release/libai_cli_session_db.dylib
-          codesign -f -s - target/release/vimo-agent
-
-      - name: Upload artifact (dry run)
-        if: ${{ inputs.dry_run }}
-        uses: actions/upload-artifact@v4
-        with:
-          name: ai-cli-session-db-release
-          path: |
-            target/release/libai_cli_session_db.dylib
-            target/release/libai_cli_session_db.dylib.sha256
-            target/release/vimo-agent
-            target/release/vimo-agent.sha256
-            include/ai_cli_session_db.h
+      - name: Get version
+        id: version
+        run: echo "version=${GITHUB_REF#refs/tags/v}" >> $GITHUB_OUTPUT
 
       - name: Create Release
-        if: ${{ !inputs.dry_run }}
         uses: softprops/action-gh-release@v2
         with:
-          files: |
-            target/release/libai_cli_session_db.dylib
-            target/release/libai_cli_session_db.dylib.sha256
-            target/release/vimo-agent
-            target/release/vimo-agent.sha256
-            include/ai_cli_session_db.h
+          files: release/*
           body: |
-            ## ai-cli-session-db v${{ steps.dylib.outputs.version }}
+            ## ai-cli-session-db v${{ steps.version.outputs.version }}
 
-            macOS arm64 release package
+            Multi-platform release
 
-            ### Artifacts
+            ### vimo-agent (for memex)
 
-            | File | Description | SHA256 |
-            |------|-------------|--------|
-            | `libai_cli_session_db.dylib` | FFI dynamic library | `${{ steps.dylib.outputs.sha256 }}` |
-            | `vimo-agent` | Agent binary | `${{ steps.agent.outputs.sha256 }}` |
+            | Platform | Binary | Checksum |
+            |----------|--------|----------|
+            | macOS Apple Silicon | `vimo-agent-darwin-arm64` | [SHA256](vimo-agent-darwin-arm64.sha256) |
+            | macOS Intel | `vimo-agent-darwin-x64` | [SHA256](vimo-agent-darwin-x64.sha256) |
+            | Linux x64 | `vimo-agent-linux-x64` | [SHA256](vimo-agent-linux-x64.sha256) |
+            | Linux arm64 | `vimo-agent-linux-arm64` | [SHA256](vimo-agent-linux-arm64.sha256) |
+            | Windows x64 | `vimo-agent-windows-x64.exe` | [SHA256](vimo-agent-windows-x64.exe.sha256) |
 
-            ### Install dylib
+            ### FFI dylib (for ETerm Swift)
 
+            | Platform | Library | Checksum |
+            |----------|---------|----------|
+            | macOS Apple Silicon | `libai_cli_session_db-darwin-arm64.dylib` | [SHA256](libai_cli_session_db-darwin-arm64.dylib.sha256) |
+            | macOS Intel | `libai_cli_session_db-darwin-x64.dylib` | [SHA256](libai_cli_session_db-darwin-x64.dylib.sha256) |
+
+            ### Quick Install (vimo-agent)
+
+            **macOS / Linux:**
             ```bash
-            mkdir -p ~/.vimo/lib
-            curl -L -o ~/.vimo/lib/libai_cli_session_db.dylib \
-              https://github.com/${{ github.repository }}/releases/download/${{ github.ref_name }}/libai_cli_session_db.dylib
-            ```
+            OS=$(uname -s | tr '[:upper:]' '[:lower:]')
+            ARCH=$(uname -m)
+            case "$OS-$ARCH" in
+              darwin-arm64) FILE="vimo-agent-darwin-arm64" ;;
+              darwin-x86_64) FILE="vimo-agent-darwin-x64" ;;
+              linux-x86_64) FILE="vimo-agent-linux-x64" ;;
+              linux-aarch64) FILE="vimo-agent-linux-arm64" ;;
+              *) echo "Unsupported: $OS-$ARCH"; exit 1 ;;
+            esac
 
-            ### Install vimo-agent
-
-            ```bash
             mkdir -p ~/.vimo/bin
             curl -L -o ~/.vimo/bin/vimo-agent \
-              https://github.com/${{ github.repository }}/releases/download/${{ github.ref_name }}/vimo-agent
+              https://github.com/${{ github.repository }}/releases/download/${{ github.ref_name }}/$FILE
             chmod +x ~/.vimo/bin/vimo-agent
+            ```
+
+            **Windows (PowerShell):**
+            ```powershell
+            New-Item -ItemType Directory -Force -Path "$env:USERPROFILE\.vimo\bin"
+            Invoke-WebRequest -Uri "https://github.com/${{ github.repository }}/releases/download/${{ github.ref_name }}/vimo-agent-windows-x64.exe" -OutFile "$env:USERPROFILE\.vimo\bin\vimo-agent.exe"
             ```
           draft: false
           prerelease: ${{ contains(github.ref_name, 'beta') || contains(github.ref_name, 'alpha') }}
