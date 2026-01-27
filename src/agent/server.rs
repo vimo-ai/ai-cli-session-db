@@ -224,6 +224,10 @@ impl Agent {
                     tracing::info!("Received interrupt signal, preparing to exit...");
                     break;
                 }
+                _ = tokio::time::sleep(Duration::from_secs(5)) => {
+                    // 定期回到循环顶部检查 shutdown 条件
+                    continue;
+                }
             }
         }
 

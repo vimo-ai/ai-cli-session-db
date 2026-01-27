@@ -440,6 +440,21 @@ impl SessionDB {
         .map_err(Into::into)
     }
 
+    /// 获取 Session 的最大 sequence
+    ///
+    /// 返回:
+    /// - `Ok(None)` - session 不存在或没有消息
+    /// - `Ok(Some(seq))` - 最大的 sequence 值
+    pub fn get_session_max_sequence(&self, session_id: &str) -> Result<Option<i64>> {
+        let conn = self.conn.lock();
+        conn.query_row(
+            "SELECT MAX(sequence) FROM messages WHERE session_id = ?1",
+            params![session_id],
+            |row| row.get(0),
+        )
+        .map_err(Into::into)
+    }
+
     /// 获取 Sessions (支持可选的 project_id 过滤)
     pub fn get_sessions(&self, project_id: Option<i64>, limit: usize) -> Result<Vec<Session>> {
         let conn = self.conn.lock();

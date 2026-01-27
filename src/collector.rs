@@ -140,6 +140,14 @@ impl<'a> Collector<'a> {
                     continue;
                 }
 
+                // 获取当前最大 sequence，增量写入时从 max+1 开始
+                let max_sequence = self
+                    .db
+                    .get_session_max_sequence(&meta.id)
+                    .unwrap_or(None)
+                    .unwrap_or(-1);
+                let start_sequence = max_sequence + 1;
+
                 // 转换并插入消息（时间戳增量过滤）
                 let messages: Vec<MessageInput> = parse_result
                     .messages
@@ -168,7 +176,7 @@ impl<'a> Collector<'a> {
                             content_text: msg.content.text.clone(),
                             content_full: msg.content.full.clone(),
                             timestamp,
-                            sequence: i as i64,
+                            sequence: start_sequence + i as i64,
                             source: Some(msg.source.to_string()),
                             channel: msg.channel.clone(),
                             model: msg.model.clone(),
@@ -394,6 +402,14 @@ impl<'a> Collector<'a> {
             return Ok(result);
         }
 
+        // 获取当前最大 sequence，增量写入时从 max+1 开始
+        let max_sequence = self
+            .db
+            .get_session_max_sequence(&session_id)
+            .unwrap_or(None)
+            .unwrap_or(-1);
+        let start_sequence = max_sequence + 1;
+
         // 转换消息格式
         let messages: Vec<MessageInput> = parse_result
             .messages
@@ -417,7 +433,7 @@ impl<'a> Collector<'a> {
                     content_text: msg.content.text.clone(),
                     content_full: msg.content.full.clone(),
                     timestamp,
-                    sequence: i as i64,
+                    sequence: start_sequence + i as i64,
                     source: Some(msg.source.to_string()),
                     channel: msg.channel.clone(),
                     model: msg.model.clone(),
