@@ -1,6 +1,8 @@
 //! Agent Client 连接逻辑
 //!
-//! 实现连接或启动 Agent 的逻辑
+//! 跨平台实现连接或启动 Agent 的逻辑
+//! - Unix: Unix Domain Socket
+//! - Windows: Named Pipe
 
 use std::fs;
 use std::path::PathBuf;
@@ -8,9 +10,15 @@ use std::process::{Command, Stdio};
 use std::time::Duration;
 
 use anyhow::{Context, Result};
-use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
-use tokio::net::unix::OwnedWriteHalf;
-use tokio::net::UnixStream;
+use interprocess::local_socket::{
+    tokio::{prelude::*, Stream},
+    Name,
+};
+#[cfg(unix)]
+use interprocess::local_socket::GenericFilePath;
+#[cfg(windows)]
+use interprocess::local_socket::GenericNamespaced;
+use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader, WriteHalf};
 use tokio::sync::mpsc;
 use tokio::time::sleep;
 
@@ -72,9 +80,28 @@ impl ClientConfig {
         self
     }
 
-    /// Socket 路径
+    /// Socket 路径 (Unix only, for cleanup)
     pub fn socket_path(&self) -> PathBuf {
         self.data_dir.join("agent.sock")
+    }
+
+    /// 获取跨平台 socket name
+    #[cfg(unix)]
+    pub fn socket_name(&self) -> Name<'static> {
+        use interprocess::local_socket::ToFsName;
+        self.socket_path()
+            .to_fs_name::<GenericFilePath>()
+            .unwrap()
+            .to_owned()
+    }
+
+    #[cfg(windows)]
+    pub fn socket_name(&self) -> Name<'static> {
+        use interprocess::local_socket::ToNsName;
+        "vimo-agent"
+            .to_ns_name::<GenericNamespaced>()
+            .unwrap()
+            .to_owned()
     }
 
     /// PID 文件路径
@@ -202,8 +229,8 @@ impl ClientConfig {
 pub struct AgentClient {
     #[allow(dead_code)]
     config: ClientConfig,
-    /// 写入端
-    writer: OwnedWriteHalf,
+    /// 写入端（跨平台 IPC stream）
+    writer: WriteHalf<Stream>,
     /// 推送事件接收通道
     push_rx: mpsc::Receiver<String>,
 }
@@ -299,11 +326,9 @@ impl AgentClient {
 /// 3. 清理残留 → 启动 Agent
 /// 4. 等待 Agent ready → 连接
 pub async fn connect_or_start_agent(config: ClientConfig) -> Result<AgentClient> {
-    let socket_path = config.socket_path();
-
     // 1. 尝试连接（重试）
     for attempt in 1..=config.connect_retries {
-        match UnixStream::connect(&socket_path).await {
+        match Stream::connect(config.socket_name()).await {
             Ok(stream) => {
                 tracing::debug!("Connected to Agent successfully (attempt={})", attempt);
                 return finish_connect(config, stream).await;
@@ -330,7 +355,7 @@ pub async fn connect_or_start_agent(config: ClientConfig) -> Result<AgentClient>
     for attempt in 1..=10 {
         sleep(Duration::from_millis(200)).await;
 
-        if let Ok(stream) = UnixStream::connect(&socket_path).await {
+        if let Ok(stream) = Stream::connect(config.socket_name()).await {
             tracing::info!("Agent started successfully, connected");
             return finish_connect(config, stream).await;
         }
@@ -342,8 +367,8 @@ pub async fn connect_or_start_agent(config: ClientConfig) -> Result<AgentClient>
 }
 
 /// 完成连接（握手 + 启动读取任务）
-async fn finish_connect(config: ClientConfig, stream: UnixStream) -> Result<AgentClient> {
-    let (reader, mut writer) = stream.into_split();
+async fn finish_connect(config: ClientConfig, stream: Stream) -> Result<AgentClient> {
+    let (reader, mut writer) = tokio::io::split(stream);
     let mut reader = BufReader::new(reader);
 
     // 发送握手
@@ -411,37 +436,57 @@ fn is_agent_stuck(config: &ClientConfig) -> bool {
         Err(_) => return false,
     };
 
-    let pid: i32 = match pid_str.trim().parse() {
+    let pid: u32 = match pid_str.trim().parse() {
         Ok(p) => p,
         Err(_) => return false,
     };
 
-    // 检查进程是否存在
-    let process_alive = unsafe { libc::kill(pid, 0) == 0 };
+    // 检查进程是否存在（跨平台）
+    let process_alive = is_process_alive(pid);
 
     // 如果进程存在但 socket 连接失败，认为是卡死
-    process_alive && !config.socket_path().exists()
+    // 注意：Windows 上 Named Pipe 没有文件实体，这个检查只在 Unix 上有意义
+    #[cfg(unix)]
+    let socket_exists = config.socket_path().exists();
+    #[cfg(windows)]
+    let socket_exists = true; // Windows 上假设存在
+
+    process_alive && !socket_exists
+}
+
+/// 跨平台进程存活检测
+fn is_process_alive(pid: u32) -> bool {
+    use sysinfo::{Pid, ProcessRefreshKind, System};
+    let mut sys = System::new();
+    sys.refresh_processes_specifics(
+        sysinfo::ProcessesToUpdate::Some(&[Pid::from_u32(pid)]),
+        true,
+        ProcessRefreshKind::new(),
+    );
+    sys.process(Pid::from_u32(pid)).is_some()
 }
 
 /// 清理残留状态
 fn cleanup_stale(config: &ClientConfig) -> Result<()> {
-    let socket_path = config.socket_path();
     let pid_path = config.pid_path();
 
-    // 尝试杀死旧进程
+    // 尝试杀死旧进程（跨平台）
     if pid_path.exists() {
         if let Ok(pid_str) = fs::read_to_string(&pid_path) {
-            if let Ok(pid) = pid_str.trim().parse::<i32>() {
-                unsafe {
-                    libc::kill(pid, libc::SIGKILL);
-                }
+            if let Ok(pid) = pid_str.trim().parse::<u32>() {
+                kill_process(pid);
                 tracing::debug!("Killed stale Agent process: pid={}", pid);
             }
         }
     }
 
-    if socket_path.exists() {
-        fs::remove_file(&socket_path)?;
+    // 清理 socket 文件 (Unix only)
+    #[cfg(unix)]
+    {
+        let socket_path = config.socket_path();
+        if socket_path.exists() {
+            fs::remove_file(&socket_path)?;
+        }
     }
 
     if pid_path.exists() {
@@ -449,6 +494,24 @@ fn cleanup_stale(config: &ClientConfig) -> Result<()> {
     }
 
     Ok(())
+}
+
+/// 跨平台杀进程
+#[cfg(unix)]
+fn kill_process(pid: u32) {
+    unsafe {
+        libc::kill(pid as i32, libc::SIGKILL);
+    }
+}
+
+#[cfg(windows)]
+fn kill_process(pid: u32) {
+    // Windows: 使用 taskkill 命令
+    let _ = Command::new("taskkill")
+        .args(["/F", "/PID", &pid.to_string()])
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status();
 }
 
 /// 启动 Agent
@@ -549,6 +612,8 @@ fn detect_platform() -> Result<String> {
         ("macos", "aarch64") => "darwin-arm64",
         ("macos", "x86_64") => "darwin-x64",
         ("linux", "x86_64") => "linux-x64",
+        ("linux", "aarch64") => "linux-arm64",
+        ("windows", "x86_64") => "windows-x64",
         _ => {
             return Err(anyhow::anyhow!(
                 "Unsupported platform: os={}, arch={}",
