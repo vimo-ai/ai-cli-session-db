@@ -3,7 +3,7 @@
 //! 从 Archive 目录读取 JSONL 文件，使用新的内容分离逻辑导入到数据库
 
 use ai_cli_session_collector::{ClaudeAdapter, IndexableSession};
-use ai_cli_session_db::{migrations, schema};
+use ai_cli_session_db::migrations;
 use anyhow::Result;
 use rusqlite::{params, Connection};
 use std::collections::HashSet;
@@ -34,9 +34,7 @@ fn main() -> Result<()> {
          PRAGMA synchronous=NORMAL;
          PRAGMA busy_timeout=5000;",
     )?;
-    migrations::run_migrations(&conn)?;
-    let full_schema = schema::full_schema(true);
-    conn.execute_batch(&full_schema)?;
+    migrations::ensure_schema(&conn)?;
 
     // 获取已有的 uuid 集合（用于跳过已存在的消息）
     let existing_uuids = get_existing_uuids(&conn)?;
