@@ -75,6 +75,31 @@ pub use agent::{Agent, AgentConfig, cleanup_stale_agent, is_agent_running};
 #[cfg(feature = "client")]
 pub use client::{AgentClient, ClientConfig, connect_or_start_agent};
 
+/// 编译时间戳（用于版本一致性检查）
+///
+/// Agent 和 Client 共享此常量。如果 CI 一起编译，时间戳相同。
+/// 格式：Unix 时间戳（秒）
+pub const BUILD_TIMESTAMP: u64 = {
+    // const 中不能直接用 parse()，需要手动解析
+    const BYTES: &[u8] = env!("BUILD_TIMESTAMP").as_bytes();
+    const fn parse_u64(bytes: &[u8]) -> u64 {
+        let mut result = 0u64;
+        let mut i = 0;
+        while i < bytes.len() {
+            result = result * 10 + (bytes[i] - b'0') as u64;
+            i += 1;
+        }
+        result
+    }
+    parse_u64(BYTES)
+};
+
+/// 完整版本号（语义版本 + 编译时间戳）
+///
+/// 格式：`{CARGO_PKG_VERSION}-{BUILD_TIMESTAMP}`
+/// 例如：`0.1.0-1706400000`
+pub const VERSION_FULL: &str = concat!(env!("CARGO_PKG_VERSION"), "-", env!("BUILD_TIMESTAMP"));
+
 // Re-export ai-cli-session-collector 类型（统一入口）
 // 下游项目应该从这里导入，避免直接依赖 ai-cli-session-collector
 pub use ai_cli_session_collector::{

@@ -1,6 +1,14 @@
 use std::env;
+use std::time::{SystemTime, UNIX_EPOCH};
 
 fn main() {
+    // 生成编译时间戳（用于版本一致性检查）
+    let build_timestamp = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .expect("Time went backwards")
+        .as_secs();
+    println!("cargo:rustc-env=BUILD_TIMESTAMP={}", build_timestamp);
+
     let crate_dir = env::var("CARGO_MANIFEST_DIR").unwrap();
     let output_file = format!("{}/include/ai_cli_session_db.h", crate_dir);
 

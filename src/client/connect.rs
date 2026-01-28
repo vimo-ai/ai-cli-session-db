@@ -157,7 +157,7 @@ impl ClientConfig {
     }
 
     /// 查找 Agent 源二进制（用于自动部署）
-    fn find_agent_source(&self) -> Option<PathBuf> {
+    pub fn find_agent_source(&self) -> Option<PathBuf> {
         // 1. 优先从配置的 agent_source_dir 查找（plugin bundle 等场景）
         if let Some(ref source_dir) = self.agent_source_dir {
             let path = source_dir.join("vimo-agent");
@@ -203,7 +203,7 @@ impl ClientConfig {
     }
 
     /// 部署 Agent 到 ~/.vimo/bin/
-    fn deploy_agent(&self, source: &PathBuf) -> std::io::Result<()> {
+    pub fn deploy_agent(&self, source: &PathBuf) -> std::io::Result<()> {
         let install_dir = self.data_dir.join("bin");
         let install_path = install_dir.join("vimo-agent");
 
@@ -326,48 +326,126 @@ impl AgentClient {
 /// 2. 连接失败 → 检查残留状态
 /// 3. 清理残留 → 启动 Agent
 /// 4. 等待 Agent ready → 连接
+/// 5. 版本检查 → 如果本地二进制更新，重启 Agent（最多重启一次）
 pub async fn connect_or_start_agent(config: ClientConfig) -> Result<AgentClient> {
-    // 1. 尝试连接（重试）
-    for attempt in 1..=config.connect_retries {
-        match Stream::connect(config.socket_name()).await {
-            Ok(stream) => {
-                tracing::debug!("Connected to Agent successfully (attempt={})", attempt);
-                return finish_connect(config, stream).await;
-            }
-            Err(e) => {
-                tracing::debug!("Failed to connect to Agent (attempt={}): {}", attempt, e);
-                if attempt < config.connect_retries {
-                    sleep(Duration::from_millis(config.retry_interval_ms)).await;
+    // 最多尝试一次版本不匹配重启
+    let mut version_restart_attempted = false;
+
+    loop {
+        // 1. 尝试连接（重试）
+        let mut connected = false;
+        for attempt in 1..=config.connect_retries {
+            match Stream::connect(config.socket_name()).await {
+                Ok(stream) => {
+                    tracing::debug!("Connected to Agent successfully (attempt={})", attempt);
+                    match finish_connect(config.clone(), stream).await {
+                        Ok(client) => return Ok(client),
+                        Err(e) if e.to_string() == "AGENT_VERSION_MISMATCH" => {
+                            if version_restart_attempted {
+                                return Err(anyhow::anyhow!(
+                                    "Agent version mismatch persists after restart. \
+                                     Check if the correct vimo-agent binary is deployed."
+                                ));
+                            }
+                            // 触发重启流程
+                            tracing::info!("Restarting Agent due to version mismatch...");
+                            version_restart_attempted = true;
+                            cleanup_stale(&config)?;
+                            deploy_and_start_agent(&config)?;
+                            connected = false;
+                            break; // 跳出内层循环，重新开始外层循环
+                        }
+                        Err(e) => return Err(e),
+                    }
+                }
+                Err(e) => {
+                    tracing::debug!("Failed to connect to Agent (attempt={}): {}", attempt, e);
+                    if attempt < config.connect_retries {
+                        sleep(Duration::from_millis(config.retry_interval_ms)).await;
+                    }
                 }
             }
         }
-    }
 
-    // 2. 检查残留状态
-    if is_agent_stuck(&config) {
-        tracing::warn!("Agent appears stuck, cleaning up stale state...");
-        cleanup_stale(&config)?;
-    }
-
-    // 3. 启动 Agent
-    start_agent(&config)?;
-
-    // 4. 等待 Agent ready 并连接
-    for attempt in 1..=10 {
-        sleep(Duration::from_millis(200)).await;
-
-        if let Ok(stream) = Stream::connect(config.socket_name()).await {
-            tracing::info!("Agent started successfully, connected");
-            return finish_connect(config, stream).await;
+        // 如果是因为版本重启，等待新 Agent 启动后重试
+        if version_restart_attempted && !connected {
+            // 等待新 Agent 准备就绪
+            for attempt in 1..=10 {
+                sleep(Duration::from_millis(200)).await;
+                if Stream::connect(config.socket_name()).await.is_ok() {
+                    tracing::info!("Restarted Agent is ready, reconnecting...");
+                    break;
+                }
+                tracing::debug!("Waiting for restarted Agent (attempt={})", attempt);
+            }
+            continue; // 重新开始连接流程
         }
 
-        tracing::debug!("Waiting for Agent to be ready (attempt={})", attempt);
-    }
+        // 2. 检查残留状态
+        if is_agent_stuck(&config) {
+            tracing::warn!("Agent appears stuck, cleaning up stale state...");
+            cleanup_stale(&config)?;
+        }
 
-    Err(anyhow::anyhow!("Timeout starting Agent"))
+        // 3. 启动 Agent
+        start_agent(&config)?;
+
+        // 4. 等待 Agent ready 并连接
+        for attempt in 1..=10 {
+            sleep(Duration::from_millis(200)).await;
+
+            if let Ok(stream) = Stream::connect(config.socket_name()).await {
+                tracing::info!("Agent started successfully, connected");
+                match finish_connect(config.clone(), stream).await {
+                    Ok(client) => return Ok(client),
+                    Err(e) if e.to_string() == "AGENT_VERSION_MISMATCH" => {
+                        if version_restart_attempted {
+                            return Err(anyhow::anyhow!(
+                                "Agent version mismatch persists after restart. \
+                                 Check if the correct vimo-agent binary is deployed."
+                            ));
+                        }
+                        tracing::warn!("Newly started Agent has version mismatch, restarting...");
+                        version_restart_attempted = true;
+                        cleanup_stale(&config)?;
+                        deploy_and_start_agent(&config)?;
+                        continue; // 重新等待
+                    }
+                    Err(e) => return Err(e),
+                }
+            }
+
+            tracing::debug!("Waiting for Agent to be ready (attempt={})", attempt);
+        }
+
+        return Err(anyhow::anyhow!("Timeout starting Agent"));
+    }
 }
 
-/// 完成连接（握手 + 启动读取任务）
+/// 部署最新二进制并启动 Agent
+fn deploy_and_start_agent(config: &ClientConfig) -> Result<()> {
+    // 部署最新的 agent 二进制（如果有源路径）
+    if let Some(source_path) = config.find_agent_source() {
+        tracing::info!("Deploying newer Agent binary from: {:?}", source_path);
+        if let Err(e) = config.deploy_agent(&source_path) {
+            tracing::warn!("Failed to deploy Agent: {}", e);
+        }
+    }
+
+    // 启动新 Agent
+    start_agent(config)
+}
+
+/// 从版本字符串中提取时间戳
+///
+/// 版本格式：`{semver}-{timestamp}` 或 `{semver}`
+/// 返回 None 表示无法解析（旧版本格式）
+fn extract_build_timestamp(version: &str) -> Option<u64> {
+    // 格式：0.1.0-1706400000
+    version.rsplit('-').next()?.parse().ok()
+}
+
+/// 完成连接（握手 + 版本检查 + 启动读取任务）
 async fn finish_connect(config: ClientConfig, stream: Stream) -> Result<AgentClient> {
     let (reader, mut writer) = tokio::io::split(stream);
     let mut reader = BufReader::new(reader);
@@ -385,15 +463,46 @@ async fn finish_connect(config: ClientConfig, stream: Stream) -> Result<AgentCli
     reader.read_line(&mut line).await?;
 
     let response: crate::protocol::Response = serde_json::from_str(&line)?;
-    match response {
+    let agent_version = match response {
         crate::protocol::Response::HandshakeOk { agent_version } => {
             tracing::info!("Handshake successful: agent_version={}", agent_version);
+            agent_version
         }
         crate::protocol::Response::Error { code, message } => {
             return Err(anyhow::anyhow!("Handshake failed: {} (code={})", message, code));
         }
         _ => {
             return Err(anyhow::anyhow!("Unexpected handshake response"));
+        }
+    };
+
+    // 版本一致性检查：比较编译时间戳
+    let expected_timestamp = crate::BUILD_TIMESTAMP;
+    let agent_timestamp = extract_build_timestamp(&agent_version);
+
+    match agent_timestamp {
+        Some(ts) if ts < expected_timestamp => {
+            // 运行中的 agent 比本地二进制旧，需要重启
+            tracing::warn!(
+                "Agent version mismatch: running={} (ts={}), expected ts={}. Triggering restart...",
+                agent_version, ts, expected_timestamp
+            );
+            // 关闭当前连接，返回特殊错误触发重启流程
+            drop(writer);
+            return Err(anyhow::anyhow!("AGENT_VERSION_MISMATCH"));
+        }
+        Some(ts) => {
+            tracing::debug!(
+                "Agent version OK: running={} (ts={}), client ts={}",
+                agent_version, ts, expected_timestamp
+            );
+        }
+        None => {
+            // 旧版本 agent（无时间戳），继续使用但警告
+            tracing::warn!(
+                "Agent version {} has no build timestamp (legacy format), skipping version check",
+                agent_version
+            );
         }
     }
 
