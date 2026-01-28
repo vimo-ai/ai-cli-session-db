@@ -196,10 +196,11 @@ impl<'a> Collector<'a> {
                 }
 
                 match self.db.insert_messages(&meta.id, &messages) {
-                    Ok(inserted) => {
+                    Ok((inserted, new_ids)) => {
                         if inserted > 0 {
                             result.sessions_scanned += 1;
                             result.messages_inserted += inserted;
+                            result.new_message_ids.extend(new_ids);
                             tracing::debug!("Session {} inserted {} messages", meta.id, inserted);
                         }
                     }
@@ -457,9 +458,10 @@ impl<'a> Collector<'a> {
 
         // 插入消息（ON CONFLICT DO NOTHING 保证不重复）
         match self.db.insert_messages(&session_id, &messages) {
-            Ok(inserted) => {
+            Ok((inserted, new_ids)) => {
                 result.sessions_scanned = 1;
                 result.messages_inserted = inserted;
+                result.new_message_ids = new_ids;
                 if inserted > 0 {
                     tracing::info!(
                         "Incremental indexing [{}]: session {} inserted {} messages",

@@ -4,7 +4,7 @@
 //! - Unix: Unix Domain Socket
 //! - Windows: Named Pipe
 
-use std::fs;
+use std::fs::{self, File, OpenOptions};
 use std::path::PathBuf;
 use std::process::{Command, Stdio};
 use std::time::Duration;
@@ -565,9 +565,17 @@ fn start_agent(config: &ClientConfig) -> Result<()> {
 
     tracing::info!("Starting Agent: {:?}", agent_path);
 
+    // 打开日志文件（追加模式）
+    let log_path = config.data_dir.join("agent.log");
+    let log_file = OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&log_path)
+        .context("Failed to open agent log file")?;
+
     Command::new(&agent_path)
         .stdout(Stdio::null())
-        .stderr(Stdio::null())
+        .stderr(Stdio::from(log_file))
         .spawn()
         .context("Failed to start Agent")?;
 

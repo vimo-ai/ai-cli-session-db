@@ -565,7 +565,7 @@ pub unsafe extern "C" fn session_db_insert_messages(
         }
 
         match handle.db.insert_messages(session_id_str, &rust_messages) {
-            Ok(inserted) => Ok(inserted),
+            Ok((inserted, _)) => Ok(inserted),
             Err(e) => Err(map_error(e)),
         }
     }));

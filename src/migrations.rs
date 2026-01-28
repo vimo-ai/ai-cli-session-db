@@ -1,64 +1,60 @@
 //! 数据库迁移模块
+//!
+//! 采用幂等迁移策略：
+//! - 不依赖版本号做 DDL，检查实际状态，缺什么补什么
+//! - 表用 CREATE TABLE IF NOT EXISTS
+//! - 列用 ensure_column 检查并补充
+//! - 清理旧的 schema_migrations 系统
 
+use crate::schema;
 use rusqlite::{Connection, Result as SqliteResult};
-use tracing::{info, warn};
+use tracing::info;
 
-/// 迁移版本
-const MIGRATION_VERSION: i64 = 2;
+/// 当前 schema 版本（用于未来可能的数据迁移）
+const SCHEMA_VERSION: i32 = 1;
 
-/// 初始化迁移系统
-pub fn initialize_migrations(conn: &Connection) -> SqliteResult<()> {
-    // 创建迁移版本表
-    conn.execute(
-        r#"
-        CREATE TABLE IF NOT EXISTS schema_migrations (
-            version INTEGER PRIMARY KEY,
-            applied_at INTEGER NOT NULL
-        )
-        "#,
-        [],
-    )?;
+/// 确保数据库 schema 完整（幂等）
+///
+/// 该函数可以安全地多次调用，会自动检查并补充缺失的表和列。
+/// 支持所有用户场景：新用户、老用户（V0/V1/V2）、脏迁移、备份恢复。
+pub fn ensure_schema(conn: &Connection) -> SqliteResult<()> {
+    info!("确保数据库 schema 完整...");
 
-    info!("Migration system initialized");
-    Ok(())
-}
+    let fts = cfg!(feature = "fts");
+    let (tables_sql, indexes_sql, fts_sql) = schema::full_schema_parts(fts);
 
-/// 获取当前数据库版本
-fn get_current_version(conn: &Connection) -> SqliteResult<i64> {
-    let version: SqliteResult<i64> =
-        conn.query_row("SELECT MAX(version) FROM schema_migrations", [], |row| {
-            row.get(0)
-        });
+    // 1. 创建表（IF NOT EXISTS，幂等）
+    conn.execute_batch(&tables_sql)?;
+    info!("表结构已确保");
 
-    match version {
-        Ok(v) => Ok(v),
-        Err(_) => Ok(0), // 如果表为空，返回 0
+    // 2. 补充可能缺失的列（幂等）
+    // 注意：必须在创建索引之前，因为索引可能依赖这些列
+    ensure_sessions_columns(conn)?;
+    ensure_messages_columns(conn)?;
+    info!("列结构已确保");
+
+    // 3. 创建索引（IF NOT EXISTS，幂等）
+    conn.execute_batch(&indexes_sql)?;
+    info!("索引已确保");
+
+    // 4. FTS（如果启用）
+    if let Some(fts) = fts_sql {
+        conn.execute_batch(&fts)?;
+        info!("FTS 已确保");
     }
-}
 
-/// 记录迁移版本
-fn record_migration(conn: &Connection, version: i64) -> SqliteResult<()> {
-    let current_time_ms = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_millis() as i64)
-        .unwrap_or(0);
+    // 5. 清理旧的迁移系统
+    cleanup_old_migration_system(conn)?;
 
-    conn.execute(
-        "INSERT OR REPLACE INTO schema_migrations (version, applied_at) VALUES (?1, ?2)",
-        [version, current_time_ms],
-    )?;
+    // 6. 更新 user_version（用于未来可能的数据迁移）
+    let current_version: i32 = conn.pragma_query_value(None, "user_version", |row| row.get(0))?;
+    if current_version < SCHEMA_VERSION {
+        conn.pragma_update(None, "user_version", SCHEMA_VERSION)?;
+        info!("user_version 更新: {} -> {}", current_version, SCHEMA_VERSION);
+    }
 
+    info!("数据库 schema 确保完成");
     Ok(())
-}
-
-/// 检查表是否存在
-fn table_exists(conn: &Connection, table: &str) -> SqliteResult<bool> {
-    let count: i64 = conn.query_row(
-        "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name=?1",
-        [table],
-        |row| row.get(0),
-    )?;
-    Ok(count > 0)
 }
 
 /// 检查列是否存在
@@ -78,140 +74,101 @@ fn column_exists(conn: &Connection, table: &str, column: &str) -> SqliteResult<b
     Ok(false)
 }
 
-/// 迁移 1: 添加审批字段到 messages 表
-fn migration_001_add_approval_fields(conn: &Connection) -> SqliteResult<()> {
-    info!("Running migration 001: Add approval fields");
+/// 检查表是否存在
+fn table_exists(conn: &Connection, table: &str) -> SqliteResult<bool> {
+    let count: i64 = conn.query_row(
+        "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name=?1",
+        [table],
+        |row| row.get(0),
+    )?;
+    Ok(count > 0)
+}
 
-    // 如果表不存在，跳过迁移（schema 会创建完整表）
-    if !table_exists(conn, "messages")? {
-        info!("messages table does not exist, skipping migration (will be created by schema)");
+/// 幂等添加列
+///
+/// 如果列不存在则添加，存在则跳过。
+/// 注意：SQLite ALTER TABLE ADD COLUMN 的限制：
+/// - NOT NULL 列必须有默认值
+/// - 不能加 PRIMARY KEY
+fn ensure_column(conn: &Connection, table: &str, column: &str, definition: &str) -> SqliteResult<()> {
+    // 如果表不存在，跳过（表会由 CREATE TABLE IF NOT EXISTS 创建）
+    if !table_exists(conn, table)? {
         return Ok(());
     }
 
-    // 检查 approval_status 列是否存在
-    let approval_status_exists = column_exists(conn, "messages", "approval_status")?;
-
-    if !approval_status_exists {
-        info!("Adding approval_status column");
-        conn.execute("ALTER TABLE messages ADD COLUMN approval_status TEXT", [])?;
-    } else {
-        info!("approval_status column already exists, skipping");
+    if !column_exists(conn, table, column)? {
+        let sql = format!("ALTER TABLE {} ADD COLUMN {} {}", table, column, definition);
+        conn.execute(&sql, [])?;
+        info!("补充列: {}.{}", table, column);
     }
 
-    // 检查 approval_resolved_at 列是否存在
-    let approval_resolved_at_exists = column_exists(conn, "messages", "approval_resolved_at")?;
-
-    if !approval_resolved_at_exists {
-        info!("Adding approval_resolved_at column");
-        conn.execute(
-            "ALTER TABLE messages ADD COLUMN approval_resolved_at INTEGER",
-            [],
-        )?;
-    } else {
-        info!("approval_resolved_at column already exists, skipping");
-    }
-
-    // 创建索引（如果不存在）
-    // SQLite 的 CREATE INDEX IF NOT EXISTS 是安全的
-    info!("Creating approval status indexes");
-    conn.execute(
-        "CREATE INDEX IF NOT EXISTS idx_messages_approval_status ON messages(approval_status) WHERE approval_status IS NOT NULL",
-        [],
-    )?;
-
-    conn.execute(
-        "CREATE INDEX IF NOT EXISTS idx_messages_approval_pending ON messages(session_id, approval_status) WHERE approval_status = 'pending'",
-        [],
-    )?;
-
-    info!("Migration 001 complete");
     Ok(())
 }
 
-/// 迁移 2: 添加增量读取字段到 sessions 表
-fn migration_002_add_incremental_fields(conn: &Connection) -> SqliteResult<()> {
-    info!("Running migration 002: Add incremental read fields");
+/// 确保 sessions 表的所有列存在
+fn ensure_sessions_columns(conn: &Connection) -> SqliteResult<()> {
+    // 基础字段（可能在老表中缺失）
+    ensure_column(conn, "sessions", "message_count", "INTEGER DEFAULT 0")?;
+    ensure_column(conn, "sessions", "last_message_at", "INTEGER")?;
+    ensure_column(conn, "sessions", "cwd", "TEXT")?;
+    ensure_column(conn, "sessions", "model", "TEXT")?;
+    ensure_column(conn, "sessions", "channel", "TEXT")?;
+    ensure_column(conn, "sessions", "file_mtime", "INTEGER")?;
+    ensure_column(conn, "sessions", "file_size", "INTEGER")?;
+    ensure_column(conn, "sessions", "file_offset", "INTEGER DEFAULT 0")?;
+    ensure_column(conn, "sessions", "file_inode", "INTEGER")?;
+    ensure_column(conn, "sessions", "encoded_dir_name", "TEXT")?;
+    ensure_column(conn, "sessions", "meta", "TEXT")?;
+    ensure_column(
+        conn,
+        "sessions",
+        "created_at",
+        "INTEGER DEFAULT (strftime('%s','now')*1000)",
+    )?;
+    ensure_column(
+        conn,
+        "sessions",
+        "updated_at",
+        "INTEGER DEFAULT (strftime('%s','now')*1000)",
+    )?;
 
-    // 如果表不存在，跳过迁移
-    if !table_exists(conn, "sessions")? {
-        info!("sessions table does not exist, skipping migration (will be created by schema)");
-        return Ok(());
-    }
-
-    // 添加 file_offset 列
-    if !column_exists(conn, "sessions", "file_offset")? {
-        info!("Adding file_offset column");
-        conn.execute(
-            "ALTER TABLE sessions ADD COLUMN file_offset INTEGER DEFAULT 0",
-            [],
-        )?;
-    } else {
-        info!("file_offset column already exists, skipping");
-    }
-
-    // 添加 file_inode 列
-    if !column_exists(conn, "sessions", "file_inode")? {
-        info!("Adding file_inode column");
-        conn.execute("ALTER TABLE sessions ADD COLUMN file_inode INTEGER", [])?;
-    } else {
-        info!("file_inode column already exists, skipping");
-    }
-
-    info!("Migration 002 complete");
     Ok(())
 }
 
-/// 执行所有待应用的迁移
+/// 确保 messages 表的所有列存在
+fn ensure_messages_columns(conn: &Connection) -> SqliteResult<()> {
+    // 基础字段（可能在老表中缺失）
+    ensure_column(conn, "messages", "source", "TEXT DEFAULT 'claude'")?;
+    ensure_column(conn, "messages", "channel", "TEXT")?;
+    ensure_column(conn, "messages", "model", "TEXT")?;
+    ensure_column(conn, "messages", "tool_call_id", "TEXT")?;
+    ensure_column(conn, "messages", "tool_name", "TEXT")?;
+    ensure_column(conn, "messages", "tool_args", "TEXT")?;
+    ensure_column(conn, "messages", "raw", "TEXT")?;
+    ensure_column(conn, "messages", "vector_indexed", "INTEGER DEFAULT 0")?;
+    ensure_column(conn, "messages", "approval_status", "TEXT")?;
+    ensure_column(conn, "messages", "approval_resolved_at", "INTEGER")?;
+
+    Ok(())
+}
+
+/// 清理旧的迁移系统
+///
+/// 删除旧的 schema_migrations 表，因为新系统不再需要它。
+fn cleanup_old_migration_system(conn: &Connection) -> SqliteResult<()> {
+    if table_exists(conn, "schema_migrations")? {
+        conn.execute("DROP TABLE schema_migrations", [])?;
+        info!("已清理旧的 schema_migrations 表");
+    }
+    Ok(())
+}
+
+// ==================== 兼容性导出 ====================
+
+/// 兼容旧代码的入口（重定向到 ensure_schema）
+#[deprecated(note = "请使用 ensure_schema")]
 pub fn run_migrations(conn: &Connection) -> SqliteResult<()> {
-    // 初始化迁移系统
-    initialize_migrations(conn)?;
-
-    // 获取当前版本
-    let current_version = get_current_version(conn)?;
-    info!("Current database version: {}", current_version);
-
-    // 如果已经是最新版本，直接返回
-    if current_version >= MIGRATION_VERSION {
-        info!("Database is up to date, no migration needed");
-        return Ok(());
-    }
-
-    // 执行迁移（事务保证原子性）
-    let tx = conn.unchecked_transaction()?;
-
-    // 迁移 1: 添加审批字段
-    if current_version < 1 {
-        match migration_001_add_approval_fields(&tx) {
-            Ok(_) => {
-                record_migration(&tx, 1)?;
-                info!("Migration 1 applied");
-            }
-            Err(e) => {
-                warn!("Migration 1 failed: {}", e);
-                return Err(e);
-            }
-        }
-    }
-
-    // 迁移 2: 添加增量读取字段
-    if current_version < 2 {
-        match migration_002_add_incremental_fields(&tx) {
-            Ok(_) => {
-                record_migration(&tx, 2)?;
-                info!("Migration 2 applied");
-            }
-            Err(e) => {
-                warn!("Migration 2 failed: {}", e);
-                return Err(e);
-            }
-        }
-    }
-
-    // 提交事务
-    tx.commit()?;
-
-    info!("All migrations applied successfully, current version: {}", MIGRATION_VERSION);
-    Ok(())
+    ensure_schema(conn)
 }
 
 #[cfg(test)]
@@ -220,14 +177,30 @@ mod tests {
     use rusqlite::Connection;
 
     #[test]
-    fn test_migrations() {
-        // 创建内存数据库
+    fn test_ensure_schema_new_database() {
+        // 新数据库
         let conn = Connection::open_in_memory().unwrap();
+        ensure_schema(&conn).unwrap();
 
-        // 创建基础 schema（模拟老版本数据库）
+        // 验证表存在
+        assert!(table_exists(&conn, "projects").unwrap());
+        assert!(table_exists(&conn, "sessions").unwrap());
+        assert!(table_exists(&conn, "messages").unwrap());
+        assert!(table_exists(&conn, "talks").unwrap());
+
+        // 验证关键列存在
+        assert!(column_exists(&conn, "sessions", "file_offset").unwrap());
+        assert!(column_exists(&conn, "sessions", "file_inode").unwrap());
+        assert!(column_exists(&conn, "messages", "approval_status").unwrap());
+    }
+
+    #[test]
+    fn test_ensure_schema_old_database() {
+        // 模拟老数据库（只有基础表）
+        let conn = Connection::open_in_memory().unwrap();
         conn.execute_batch(
             r#"
-            CREATE TABLE IF NOT EXISTS messages (
+            CREATE TABLE messages (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 session_id TEXT NOT NULL,
                 uuid TEXT NOT NULL UNIQUE,
@@ -237,31 +210,87 @@ mod tests {
                 timestamp INTEGER NOT NULL,
                 sequence INTEGER NOT NULL
             );
-            CREATE TABLE IF NOT EXISTS sessions (
+            CREATE TABLE sessions (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 session_id TEXT NOT NULL UNIQUE,
                 project_id INTEGER NOT NULL
             );
+            CREATE TABLE schema_migrations (
+                version INTEGER PRIMARY KEY,
+                applied_at INTEGER NOT NULL
+            );
+            INSERT INTO schema_migrations VALUES (1, 1234567890);
             "#,
         )
         .unwrap();
 
-        // 运行迁移
-        run_migrations(&conn).unwrap();
+        // 运行幂等迁移
+        ensure_schema(&conn).unwrap();
 
-        // 验证迁移 1 的列是否存在
-        assert!(column_exists(&conn, "messages", "approval_status").unwrap());
-        assert!(column_exists(&conn, "messages", "approval_resolved_at").unwrap());
-
-        // 验证迁移 2 的列是否存在
+        // 验证列被补充
         assert!(column_exists(&conn, "sessions", "file_offset").unwrap());
         assert!(column_exists(&conn, "sessions", "file_inode").unwrap());
+        assert!(column_exists(&conn, "sessions", "cwd").unwrap());
+        assert!(column_exists(&conn, "messages", "approval_status").unwrap());
+        assert!(column_exists(&conn, "messages", "source").unwrap());
 
-        // 验证版本
-        assert_eq!(get_current_version(&conn).unwrap(), 2);
+        // 验证旧迁移系统被清理
+        assert!(!table_exists(&conn, "schema_migrations").unwrap());
+    }
 
-        // 再次运行迁移应该是幂等的
-        run_migrations(&conn).unwrap();
-        assert_eq!(get_current_version(&conn).unwrap(), 2);
+    #[test]
+    fn test_ensure_schema_idempotent() {
+        let conn = Connection::open_in_memory().unwrap();
+
+        // 多次运行应该是幂等的
+        ensure_schema(&conn).unwrap();
+        ensure_schema(&conn).unwrap();
+        ensure_schema(&conn).unwrap();
+
+        // 验证状态正确
+        assert!(table_exists(&conn, "sessions").unwrap());
+        assert!(column_exists(&conn, "sessions", "file_offset").unwrap());
+    }
+
+    #[test]
+    fn test_ensure_schema_dirty_migration() {
+        // 模拟脏迁移：schema_migrations 记录版本 2，但实际列缺失
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(
+            r#"
+            CREATE TABLE messages (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                session_id TEXT NOT NULL,
+                uuid TEXT NOT NULL UNIQUE,
+                type TEXT NOT NULL,
+                content_text TEXT NOT NULL,
+                content_full TEXT NOT NULL,
+                timestamp INTEGER NOT NULL,
+                sequence INTEGER NOT NULL
+            );
+            CREATE TABLE sessions (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                session_id TEXT NOT NULL UNIQUE,
+                project_id INTEGER NOT NULL
+            );
+            CREATE TABLE schema_migrations (
+                version INTEGER PRIMARY KEY,
+                applied_at INTEGER NOT NULL
+            );
+            INSERT INTO schema_migrations VALUES (1, 1234567890);
+            INSERT INTO schema_migrations VALUES (2, 1234567891);
+            "#,
+        )
+        .unwrap();
+
+        // 验证列确实缺失
+        assert!(!column_exists(&conn, "sessions", "file_offset").unwrap());
+
+        // 运行幂等迁移，应该自动补充缺失的列
+        ensure_schema(&conn).unwrap();
+
+        // 验证列被补充
+        assert!(column_exists(&conn, "sessions", "file_offset").unwrap());
+        assert!(column_exists(&conn, "sessions", "file_inode").unwrap());
     }
 }

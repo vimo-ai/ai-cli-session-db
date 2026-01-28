@@ -14,9 +14,9 @@ use tracing_subscriber::{fmt, prelude::*, EnvFilter};
 
 #[tokio::main]
 async fn main() -> Result<()> {
-    // 初始化日志
+    // 初始化日志（输出到 stderr，配合 spawn_agent 的重定向）
     tracing_subscriber::registry()
-        .with(fmt::layer())
+        .with(fmt::layer().with_writer(std::io::stderr))
         .with(EnvFilter::from_default_env().add_directive("ai_cli_session_db=debug".parse()?))
         .init();
 

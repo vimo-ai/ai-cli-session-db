@@ -64,7 +64,7 @@ impl SessionDB {
         }
 
         // 写入
-        let inserted = self.insert_messages(session_id, &messages_to_process)?;
+        let (inserted, _) = self.insert_messages(session_id, &messages_to_process)?;
 
         // 更新检查点
         if let Some(last) = messages_to_process.last() {

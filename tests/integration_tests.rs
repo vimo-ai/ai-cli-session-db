@@ -234,7 +234,7 @@ mod message_tests {
         db.upsert_session("session-001", project_id).unwrap();
 
         let messages = create_test_messages(5);
-        let inserted = db.insert_messages("session-001", &messages).unwrap();
+        let inserted = db.insert_messages("session-001", &messages).unwrap().0;
 
         assert_eq!(inserted, 5);
 
@@ -253,11 +253,11 @@ mod message_tests {
         let messages = create_test_messages(3);
 
         // 第一次插入
-        let inserted1 = db.insert_messages("session-001", &messages).unwrap();
+        let inserted1 = db.insert_messages("session-001", &messages).unwrap().0;
         assert_eq!(inserted1, 3);
 
         // 第二次插入相同的消息（应该被去重）
-        let inserted2 = db.insert_messages("session-001", &messages).unwrap();
+        let inserted2 = db.insert_messages("session-001", &messages).unwrap().0;
         assert_eq!(inserted2, 0);
 
         // 总数还是 3
@@ -273,7 +273,7 @@ mod message_tests {
         db.upsert_session("session-001", project_id).unwrap();
 
         let messages = create_test_messages(10);
-        db.insert_messages("session-001", &messages).unwrap();
+        db.insert_messages("session-001", &messages).unwrap().0;
 
         // 分页获取
         let page1 = db.list_messages("session-001", 3, 0).unwrap();
@@ -335,7 +335,7 @@ mod message_tests {
             },
         ];
 
-        db.insert_messages("session-001", &messages).unwrap();
+        db.insert_messages("session-001", &messages).unwrap().0;
 
         let loaded = db.list_messages("session-001", 10, 0).unwrap();
         assert_eq!(loaded[0].r#type, MessageType::User);
@@ -646,7 +646,7 @@ mod incremental_scan_tests {
                 approval_resolved_at: None,
             },
         ];
-        db.insert_messages("session-001", &messages).unwrap();
+        db.insert_messages("session-001", &messages).unwrap().0;
 
         // 应该返回最大的 sequence
         let max_seq = db.get_session_max_sequence("session-001").unwrap();
@@ -725,7 +725,7 @@ mod search_tests {
             },
         ];
 
-        db.insert_messages("session-001", &messages).unwrap();
+        db.insert_messages("session-001", &messages).unwrap().0;
 
         // 搜索 "binary"
         let results = db.search_fts("binary", 10).unwrap();
@@ -838,7 +838,7 @@ mod search_tests {
             })
             .collect();
 
-        db.insert_messages("session-001", &messages).unwrap();
+        db.insert_messages("session-001", &messages).unwrap().0;
 
         // limit 3
         let results = db.search_fts("test", 3).unwrap();
@@ -897,7 +897,7 @@ mod stats_tests {
             })
             .collect();
 
-        db.insert_messages("s1", &messages).unwrap();
+        db.insert_messages("s1", &messages).unwrap().0;
 
         let stats = db.get_stats().unwrap();
         assert_eq!(stats.project_count, 2);
@@ -936,7 +936,7 @@ mod edge_case_tests {
             approval_resolved_at: None,
         }];
 
-        let inserted = db.insert_messages("session-001", &messages).unwrap();
+        let inserted = db.insert_messages("session-001", &messages).unwrap().0;
         assert_eq!(inserted, 1);
 
         let loaded = db.list_messages("session-001", 10, 0).unwrap();
@@ -970,7 +970,7 @@ mod edge_case_tests {
             approval_resolved_at: None,
         }];
 
-        db.insert_messages("session-001", &messages).unwrap();
+        db.insert_messages("session-001", &messages).unwrap().0;
 
         let loaded = db.list_messages("session-001", 10, 0).unwrap();
         assert_eq!(
@@ -1011,7 +1011,7 @@ mod edge_case_tests {
             approval_resolved_at: None,
         }];
 
-        db.insert_messages("session-001", &messages).unwrap();
+        db.insert_messages("session-001", &messages).unwrap().0;
 
         let loaded = db.list_messages("session-001", 10, 0).unwrap();
         assert_eq!(loaded[0].content_text.len(), 100 * 1024);
@@ -1092,7 +1092,7 @@ mod edge_case_tests {
             })
             .collect();
 
-        let inserted = db.insert_messages("session-001", &messages).unwrap();
+        let inserted = db.insert_messages("session-001", &messages).unwrap().0;
         assert_eq!(inserted, 1000);
 
         let stats = db.get_stats().unwrap();
@@ -1161,7 +1161,7 @@ mod edge_case_tests {
             },
         ];
 
-        db.insert_messages("session-001", &messages).unwrap();
+        db.insert_messages("session-001", &messages).unwrap().0;
 
         // 按 sequence 排序返回
         let loaded = db.list_messages("session-001", 10, 0).unwrap();

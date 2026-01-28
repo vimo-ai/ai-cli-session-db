@@ -58,21 +58,37 @@ impl From<AgentEventType> for EventType {
 pub type AgentPushCallback =
     Option<unsafe extern "C" fn(event_type: AgentEventType, data_json: *const c_char, user_data: *mut std::ffi::c_void)>;
 
+/// 断开连接回调函数类型
+///
+/// - `error_message`: 错误信息（可能为 null）
+/// - `user_data`: 用户数据指针
+pub type AgentDisconnectCallback =
+    Option<unsafe extern "C" fn(error_message: *const c_char, user_data: *mut std::ffi::c_void)>;
+
 /// 回调信息（用于跨线程传递）
 struct CallbackInfo {
     callback: AgentPushCallback,
     user_data: *mut std::ffi::c_void,
 }
 
+/// 断开连接回调信息
+struct DisconnectCallbackInfo {
+    callback: AgentDisconnectCallback,
+    user_data: *mut std::ffi::c_void,
+}
+
 // 手动实现 Send + Sync（user_data 由调用方保证线程安全）
 unsafe impl Send for CallbackInfo {}
 unsafe impl Sync for CallbackInfo {}
+unsafe impl Send for DisconnectCallbackInfo {}
+unsafe impl Sync for DisconnectCallbackInfo {}
 
 /// 内部共享状态
 struct SharedState {
     client: Mutex<Option<AgentClient>>,
     connected: AtomicBool,
     callback: Mutex<Option<CallbackInfo>>,
+    disconnect_callback: Mutex<Option<DisconnectCallbackInfo>>,
     shutdown_tx: Mutex<Option<mpsc::Sender<()>>>,
 }
 
@@ -143,6 +159,7 @@ pub unsafe extern "C" fn agent_client_create(
         client: Mutex::new(None),
         connected: AtomicBool::new(false),
         callback: Mutex::new(None),
+        disconnect_callback: Mutex::new(None),
         shutdown_tx: Mutex::new(None),
     });
 
@@ -220,39 +237,60 @@ pub unsafe extern "C" fn agent_client_connect(handle: *mut AgentClientHandle) ->
     let state = Arc::clone(&handle.state);
     handle.runtime.spawn(async move {
         let mut shutdown_rx = shutdown_rx;
+        let mut disconnected_by_peer = false;
 
         loop {
             // 获取一条消息
-            let line = {
+            let recv_result = {
                 let mut client_guard = state.client.lock();
                 let client = match client_guard.as_mut() {
                     Some(c) => c,
                     None => break,
                 };
 
-                // 使用 try_recv 避免持有锁
-                client.push_receiver().try_recv().ok()
+                // 使用 try_recv 避免持有锁，保留错误类型以检测断开
+                client.push_receiver().try_recv()
             };
 
-            if let Some(line) = line {
-                if event_tx.send(line).await.is_err() {
-                    break;
-                }
-            } else {
-                // 没有消息，检查 shutdown 或短暂休眠
-                tokio::select! {
-                    _ = shutdown_rx.recv() => {
-                        tracing::debug!("Received shutdown signal, exiting event loop");
+            match recv_result {
+                Ok(line) => {
+                    if event_tx.send(line).await.is_err() {
                         break;
                     }
-                    _ = tokio::time::sleep(tokio::time::Duration::from_millis(10)) => {
-                        // 继续轮询
+                }
+                Err(mpsc::error::TryRecvError::Disconnected) => {
+                    // channel 已关闭，agent 可能被 kill
+                    tracing::warn!("Push channel disconnected, agent may have been terminated");
+                    disconnected_by_peer = true;
+                    break;
+                }
+                Err(mpsc::error::TryRecvError::Empty) => {
+                    // 没有消息，检查 shutdown 或短暂休眠
+                    tokio::select! {
+                        _ = shutdown_rx.recv() => {
+                            tracing::debug!("Received shutdown signal, exiting event loop");
+                            break;
+                        }
+                        _ = tokio::time::sleep(tokio::time::Duration::from_millis(10)) => {
+                            // 继续轮询
+                        }
                     }
                 }
             }
         }
 
         state.connected.store(false, Ordering::SeqCst);
+
+        // 如果是意外断开，调用 disconnect callback
+        if disconnected_by_peer {
+            let disconnect_info = state.disconnect_callback.lock().as_ref().map(|c| (c.callback, c.user_data));
+            if let Some((Some(callback), user_data)) = disconnect_info {
+                let error_msg = CString::new("Agent connection lost").unwrap_or_default();
+                unsafe {
+                    callback(error_msg.as_ptr(), user_data);
+                }
+            }
+        }
     });
 
     // 处理事件并调用回调
@@ -462,6 +500,27 @@ pub unsafe extern "C" fn agent_client_set_push_callback(
     *handle.state.callback.lock() = Some(CallbackInfo { callback, user_data });
 }
 
+/// 设置断开连接回调
+///
+/// 当 Agent 连接意外断开时（如 Agent 被 kill），会调用此回调。
+///
+/// # Safety
+/// - `handle` 必须是有效句柄
+/// - `callback` 和 `user_data` 在 handle 生命周期内必须有效
+#[no_mangle]
+pub unsafe extern "C" fn agent_client_set_disconnect_callback(
+    handle: *mut AgentClientHandle,
+    callback: AgentDisconnectCallback,
+    user_data: *mut std::ffi::c_void,
+) {
+    if handle.is_null() {
+        return;
+    }
+
+    let handle = &*handle;
+    *handle.state.disconnect_callback.lock() = Some(DisconnectCallbackInfo { callback, user_data });
+}
+
 /// 检查是否已连接
 ///
 /// # Safety
@@ -490,6 +549,7 @@ pub unsafe extern "C" fn agent_client_disconnect(handle: *mut AgentClientHandle)
 
     // 1. 先清除回调，防止在 shutdown 过程中调用已释放的 user_data
     *handle.state.callback.lock() = None;
+    *handle.state.disconnect_callback.lock() = None;
 
     // 2. 发送 shutdown 信号
     if let Some(tx) = handle.state.shutdown_tx.lock().take() {

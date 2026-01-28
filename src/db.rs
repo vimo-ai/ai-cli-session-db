@@ -3,7 +3,6 @@
 use crate::config::{ConnectionMode, DbConfig};
 use crate::error::{Error, Result};
 use crate::migrations;
-use crate::schema;
 use crate::types::{Message, Project, ProjectWithStats, Session, SessionWithProject, Stats, TalkSummary};
 use ai_cli_session_collector::MessageType;
 use parking_lot::Mutex;
@@ -36,7 +35,24 @@ impl SessionDB {
             std::fs::create_dir_all(parent)?;
         }
 
-        let conn = Connection::open(path)?;
+        // 尝试打开数据库，处理 WAL 不匹配导致的 malformed 错误
+        let conn = match Connection::open(path) {
+            Ok(c) => c,
+            Err(e) if Self::is_malformed_error(&e) => {
+                tracing::warn!("数据库打开失败 (malformed): {}", e);
+                // 尝试恢复 WAL 不匹配问题
+                if Self::try_recover_from_wal_mismatch(path) {
+                    tracing::info!("WAL 恢复成功，重试打开数据库...");
+                    Connection::open(path)?
+                } else {
+                    return Err(Error::Connection(format!(
+                        "数据库损坏且无法恢复: {}",
+                        e
+                    )));
+                }
+            }
+            Err(e) => return Err(e.into()),
+        };
 
         // 启用 WAL 模式，防止写入中断导致数据库损坏
         // - WAL: 写入先到 -wal 文件，主文件不直接修改，即使进程被 kill 也安全
@@ -48,14 +64,8 @@ impl SessionDB {
              PRAGMA busy_timeout=5000;",
         )?;
 
-        // 执行数据库迁移（先于 schema，为老数据库添加缺失的列）
-        // 注意：如果是新数据库，迁移会跳过（表不存在）
-        migrations::run_migrations(&conn)?;
-
-        // 初始化 schema（创建表和索引）
-        let fts = cfg!(feature = "fts");
-        let full_schema = schema::full_schema(fts);
-        conn.execute_batch(&full_schema)?;
+        // 执行幂等迁移（确保 schema 完整）
+        migrations::ensure_schema(&conn)?;
 
         tracing::info!("Database connected: {:?}", path);
 
@@ -63,6 +73,48 @@ impl SessionDB {
             conn: Arc::new(Mutex::new(conn)),
             config: config.clone(),
         })
+    }
+
+    /// 检查是否是 malformed 错误
+    fn is_malformed_error(e: &rusqlite::Error) -> bool {
+        e.to_string().to_lowercase().contains("malformed")
+    }
+
+    /// 尝试从 WAL 不匹配问题中恢复
+    ///
+    /// 场景：用户从备份恢复数据库但没删除旧的 WAL/SHM 文件，
+    /// 新数据库文件和旧 WAL/SHM 不匹配，SQLite 打开时会报 "malformed"。
+    ///
+    /// 恢复策略：备份 WAL 文件后删除，然后重试打开。
+    /// 如果重试成功说明是 WAL 不匹配问题；如果仍失败说明是真正的数据库损坏。
+    fn try_recover_from_wal_mismatch(db_path: &Path) -> bool {
+        let wal_path = db_path.with_extension("db-wal");
+        let shm_path = db_path.with_extension("db-shm");
+
+        // 如果没有 WAL 文件，不是 WAL 不匹配问题
+        if !wal_path.exists() {
+            tracing::debug!("无 WAL 文件，不是 WAL 不匹配问题");
+            return false;
+        }
+
+        // 备份 WAL 文件（以防万一需要恢复）
+        let backup_path = wal_path.with_extension("db-wal.backup");
+        if let Err(e) = std::fs::rename(&wal_path, &backup_path) {
+            tracing::warn!("备份 WAL 文件失败: {}", e);
+            return false;
+        }
+        tracing::info!("已备份 WAL 文件: {:?} -> {:?}", wal_path, backup_path);
+
+        // 删除 SHM 文件（SHM 是共享内存索引，可以安全删除）
+        if shm_path.exists() {
+            if let Err(e) = std::fs::remove_file(&shm_path) {
+                tracing::warn!("删除 SHM 文件失败: {}", e);
+            } else {
+                tracing::info!("已删除 SHM 文件: {:?}", shm_path);
+            }
+        }
+
+        true
     }
 
     /// 获取底层连接 (用于测试)
@@ -745,12 +797,13 @@ impl SessionDB {
     // ==================== Message 操作 ====================
 
     /// 批量写入 Messages (自动去重)
-    /// 返回实际插入的数量
-    pub fn insert_messages(&self, session_id: &str, messages: &[MessageInput]) -> Result<usize> {
+    /// 返回 (实际插入的数量, 新插入的 message_ids)
+    pub fn insert_messages(&self, session_id: &str, messages: &[MessageInput]) -> Result<(usize, Vec<i64>)> {
         let mut conn = self.conn.lock();
         let tx = conn.transaction()?;
 
         let mut inserted = 0;
+        let mut new_ids = Vec::new();
         for msg in messages {
             let result = tx.execute(
                 r#"
@@ -779,7 +832,12 @@ impl SessionDB {
             );
 
             if let Ok(n) = result {
-                inserted += n;
+                if n > 0 {
+                    inserted += n;
+                    // 获取刚插入的 message id
+                    let new_id = tx.last_insert_rowid();
+                    new_ids.push(new_id);
+                }
             }
         }
 
@@ -795,7 +853,7 @@ impl SessionDB {
         )?;
 
         tx.commit()?;
-        Ok(inserted)
+        Ok((inserted, new_ids))
     }
 
     /// 获取 Session 的 Messages

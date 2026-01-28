@@ -306,6 +306,14 @@ typedef void (*AgentPushCallback)(enum AgentEventType event_type,
                                   void *user_data);
 
 /**
+ * 断开连接回调函数类型
+ *
+ * - `error_message`: 错误信息（可能为 null）
+ * - `user_data`: 用户数据指针
+ */
+typedef void (*AgentDisconnectCallback)(const char *error_message, void *user_data);
+
+/**
  * 连接数据库
  *
  * # Safety
@@ -820,6 +828,19 @@ enum FfiError agent_client_write_approve_result(struct AgentClientHandle *handle
 void agent_client_set_push_callback(struct AgentClientHandle *handle,
                                     AgentPushCallback callback,
                                     void *user_data);
+
+/**
+ * 设置断开连接回调
+ *
+ * 当 Agent 连接意外断开时（如 Agent 被 kill），会调用此回调。
+ *
+ * # Safety
+ * - `handle` 必须是有效句柄
+ * - `callback` 和 `user_data` 在 handle 生命周期内必须有效
+ */
+void agent_client_set_disconnect_callback(struct AgentClientHandle *handle,
+                                          AgentDisconnectCallback callback,
+                                          void *user_data);
 
 /**
  * 检查是否已连接
