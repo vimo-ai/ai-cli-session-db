@@ -157,7 +157,7 @@ impl Agent {
         // 设置 socket 权限为 0600 (Unix only)
         #[cfg(unix)]
         fs::set_permissions(
-            &self.config.socket_path(),
+            self.config.socket_path(),
             fs::Permissions::from_mode(0o600),
         )?;
 
@@ -167,7 +167,7 @@ impl Agent {
         {
             let db = self.db.clone();
             tokio::task::spawn_blocking(move || {
-                let collector = crate::Collector::new(&*db);
+                let collector = crate::Collector::new(&db);
                 match collector.collect_all() {
                     Ok(result) => {
                         if result.messages_inserted > 0 {

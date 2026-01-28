@@ -10,6 +10,9 @@ use rusqlite::{Connection, OptionalExtension, params};
 use std::path::Path;
 use std::sync::Arc;
 
+/// Session 增量读取状态: (offset, mtime, size, inode)
+pub type IncrementalState = (i64, Option<i64>, Option<i64>, Option<i64>);
+
 /// 数据库连接
 pub struct SessionDB {
     pub(crate) conn: Arc<Mutex<Connection>>,
@@ -727,7 +730,7 @@ impl SessionDB {
     pub fn get_session_incremental_state(
         &self,
         session_id: &str,
-    ) -> Result<Option<(i64, Option<i64>, Option<i64>, Option<i64>)>> {
+    ) -> Result<Option<IncrementalState>> {
         let conn = self.conn.lock();
         let result = conn
             .query_row(

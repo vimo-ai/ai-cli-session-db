@@ -4,7 +4,7 @@
 //! - Unix: Unix Domain Socket
 //! - Windows: Named Pipe
 
-use std::fs::{self, File, OpenOptions};
+use std::fs::{self, OpenOptions};
 use std::path::PathBuf;
 use std::process::{Command, Stdio};
 use std::time::Duration;
@@ -412,7 +412,7 @@ async fn finish_connect(config: ClientConfig, stream: Stream) -> Result<AgentCli
                     let trimmed = line.trim().to_string();
 
                     // 尝试解析为 Response
-                    if let Ok(_) = serde_json::from_str::<crate::protocol::Response>(&trimmed) {
+                    if serde_json::from_str::<crate::protocol::Response>(&trimmed).is_ok() {
                         // 是 Response，发送到 response 通道
                         if response_tx.send(trimmed).await.is_err() {
                             break;

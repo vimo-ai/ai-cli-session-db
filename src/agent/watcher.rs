@@ -141,7 +141,7 @@ impl FileWatcher {
         // 使用 spawn_blocking 避免阻塞 tokio runtime
         let db = self.db.clone();
         let result = tokio::task::spawn_blocking(move || {
-            let collector = Collector::new(&*db);
+            let collector = Collector::new(&db);
             collector.collect_by_path(&path_str)
         })
         .await
