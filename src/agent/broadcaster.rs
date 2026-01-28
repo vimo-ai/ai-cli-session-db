@@ -76,8 +76,8 @@ impl Broadcaster {
         }
     }
 
-    /// 广播事件给所有订阅者
-    pub async fn broadcast(&self, event: Event) {
+    /// 广播事件给所有订阅者（非阻塞，fire-and-forget）
+    pub fn broadcast(&self, event: Event) {
         let event_type = event.event_type();
         let push = event.to_push();
 
@@ -114,12 +114,18 @@ impl Broadcaster {
             targets.len()
         );
 
-        // 并发发送
+        // 非阻塞发送（fire-and-forget）
         for (conn_id, sender) in targets {
             let msg = message.clone();
-            if sender.send(msg).await.is_err() {
-                tracing::warn!("📡 Send failed, connection may be closed: conn_id={}", conn_id);
-                // 不在这里清理，由连接处理逻辑负责
+            if let Err(e) = sender.try_send(msg) {
+                match e {
+                    tokio::sync::mpsc::error::TrySendError::Full(_) => {
+                        tracing::warn!("📡 Channel full, dropping message: conn_id={}", conn_id);
+                    }
+                    tokio::sync::mpsc::error::TrySendError::Closed(_) => {
+                        tracing::debug!("📡 Channel closed: conn_id={}", conn_id);
+                    }
+                }
             }
         }
     }
@@ -179,8 +185,8 @@ mod tests {
     use super::*;
     use std::path::PathBuf;
 
-    #[tokio::test]
-    async fn test_broadcaster_subscribe_and_broadcast() {
+    #[test]
+    fn test_broadcaster_subscribe_and_broadcast() {
         let broadcaster = Broadcaster::new();
 
         // 创建两个订阅者
@@ -197,26 +203,22 @@ mod tests {
         broadcaster.subscribe(conn2, vec![EventType::NewMessage, EventType::SessionStart]);
 
         // 广播 NewMessage
-        broadcaster
-            .broadcast(Event::NewMessages {
-                session_id: "test-session".to_string(),
-                path: PathBuf::from("/test/path"),
-                count: 5,
-                message_ids: vec![1, 2, 3, 4, 5],
-            })
-            .await;
+        broadcaster.broadcast(Event::NewMessages {
+            session_id: "test-session".to_string(),
+            path: PathBuf::from("/test/path"),
+            count: 5,
+            message_ids: vec![1, 2, 3, 4, 5],
+        });
 
         // 两个订阅者都应该收到
         assert!(rx1.try_recv().is_ok());
         assert!(rx2.try_recv().is_ok());
 
         // 广播 SessionStart
-        broadcaster
-            .broadcast(Event::SessionStart {
-                session_id: "test-session".to_string(),
-                project_path: "/test/project".to_string(),
-            })
-            .await;
+        broadcaster.broadcast(Event::SessionStart {
+            session_id: "test-session".to_string(),
+            project_path: "/test/project".to_string(),
+        });
 
         // 只有 conn2 应该收到
         assert!(rx1.try_recv().is_err()); // conn1 没订阅 SessionStart

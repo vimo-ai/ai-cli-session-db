@@ -228,17 +228,21 @@ impl Handler {
         if let Some(ref path_str) = event.transcript_path {
             let path = Path::new(path_str);
             if path.exists() {
+                tracing::info!("🪝 Before trigger_collect");
                 if let Err(e) = self.watcher.trigger_collect(path).await {
                     tracing::warn!("HookEvent collection failed: {}", e);
                     // 不返回错误，继续广播事件
                 }
+                tracing::info!("🪝 After trigger_collect");
             } else {
                 tracing::debug!("HookEvent transcript_path not found: {}", path_str);
             }
         }
 
         // 广播 HookEvent 给订阅者
-        self.broadcaster.broadcast(Event::HookEvent(event)).await;
+        tracing::info!("🪝 Broadcasting HookEvent: type={}", event.event_type);
+        self.broadcaster.broadcast(Event::HookEvent(event));
+        tracing::info!("🪝 HookEvent broadcast done");
 
         Response::Ok
     }

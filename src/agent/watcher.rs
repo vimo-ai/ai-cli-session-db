@@ -162,14 +162,12 @@ impl FileWatcher {
                 .unwrap_or_default();
 
             // 广播 NewMessages 事件
-            self.broadcaster
-                .broadcast(Event::NewMessages {
-                    session_id,
-                    path: path_clone,
-                    count: result.messages_inserted,
-                    message_ids: result.new_message_ids,
-                })
-                .await;
+            self.broadcaster.broadcast(Event::NewMessages {
+                session_id,
+                path: path_clone,
+                count: result.messages_inserted,
+                message_ids: result.new_message_ids,
+            });
         }
 
         Ok(())
