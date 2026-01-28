@@ -348,7 +348,7 @@ impl SessionDB {
             "#,
         )?;
 
-        let rows = stmt.query_map(params![project_path, limit as i64, offset as i64], |row| {
+        let mut sessions: Vec<SessionWithProject> = stmt.query_map(params![project_path, limit as i64, offset as i64], |row| {
             Ok(SessionWithProject {
                 id: row.get(0)?,
                 session_id: row.get(1)?,
@@ -366,11 +366,73 @@ impl SessionDB {
                 meta: row.get(13)?,
                 created_at: row.get(14)?,
                 updated_at: row.get(15)?,
+                last_message_type: None,
+                last_message_preview: None,
             })
-        })?;
+        })?.collect::<std::result::Result<Vec<_>, _>>()?;
 
-        rows.collect::<std::result::Result<Vec<_>, _>>()
-            .map_err(Into::into)
+        // 为每个 session 填充最后一条消息预览
+        for session in &mut sessions {
+            if let Some((msg_type, preview)) = self.get_last_message_preview_inner(&conn, &session.session_id) {
+                session.last_message_type = Some(msg_type);
+                session.last_message_preview = Some(preview);
+            }
+        }
+
+        Ok(sessions)
+    }
+
+    /// 获取会话最后一条消息的预览（内部方法，复用连接）
+    fn get_last_message_preview_inner(&self, conn: &parking_lot::MutexGuard<Connection>, session_id: &str) -> Option<(String, String)> {
+        let result = conn.query_row(
+            r#"
+            SELECT type, content_text, content_full
+            FROM messages
+            WHERE session_id = ?1 AND type IN ('user', 'assistant')
+            ORDER BY sequence DESC
+            LIMIT 1
+            "#,
+            params![session_id],
+            |row| {
+                let msg_type: String = row.get(0)?;
+                let content_text: String = row.get::<_, Option<String>>(1)?.unwrap_or_default();
+                let content_full: String = row.get::<_, Option<String>>(2)?.unwrap_or_default();
+                Ok((msg_type, content_text, content_full))
+            },
+        );
+
+        match result {
+            Ok((msg_type, content_text, content_full)) => {
+                // 优先使用 content_text（纯文本），其次 content_full
+                let text = if !content_text.is_empty() {
+                    content_text
+                } else {
+                    content_full
+                };
+                // 截取前 100 字符
+                let preview = Self::truncate_preview(&text, 100);
+                Some((msg_type, preview))
+            }
+            Err(_) => None,
+        }
+    }
+
+    /// 截取预览文本
+    fn truncate_preview(text: &str, max_chars: usize) -> String {
+        let cleaned: String = text
+            .chars()
+            .filter(|c| !c.is_control() || *c == ' ')
+            .collect::<String>()
+            .split_whitespace()
+            .collect::<Vec<_>>()
+            .join(" ");
+
+        if cleaned.chars().count() > max_chars {
+            let truncated: String = cleaned.chars().take(max_chars - 3).collect();
+            format!("{}...", truncated)
+        } else {
+            cleaned
+        }
     }
 
     /// 获取单个 Session

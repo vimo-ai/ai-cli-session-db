@@ -311,6 +311,9 @@ impl<'a> Collector<'a> {
             meta: None,
             created_at: None,
             updated_at: None,
+            last_message_type: None,
+            last_message_preview: None,
+            last_message_at: None,
         };
 
         // 检查是否支持增量读取

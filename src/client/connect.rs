@@ -231,7 +231,9 @@ pub struct AgentClient {
     config: ClientConfig,
     /// 写入端（跨平台 IPC stream）
     writer: WriteHalf<Stream>,
-    /// 推送事件接收通道
+    /// Response 接收通道（用于 request/response 模式）
+    response_rx: mpsc::Receiver<String>,
+    /// Push 事件接收通道（用于订阅推送）
     push_rx: mpsc::Receiver<String>,
 }
 
@@ -245,9 +247,8 @@ impl AgentClient {
         // 发送请求
         self.writer.write_all(request_line.as_bytes()).await?;
 
-        // 读取响应（从 push_rx 中读取，因为响应也通过这个通道）
-        // 注意：这里简化处理，实际应该区分响应和推送
-        let response_line = self.push_rx.recv().await
+        // 从 response_rx 读取响应（与 push_rx 分离，避免竞争）
+        let response_line = self.response_rx.recv().await
             .ok_or_else(|| anyhow::anyhow!("Connection closed"))?;
 
         // 解析响应
@@ -396,10 +397,11 @@ async fn finish_connect(config: ClientConfig, stream: Stream) -> Result<AgentCli
         }
     }
 
-    // 创建推送通道
+    // 创建分离的通道：Response 和 Push 各自独立
+    let (response_tx, response_rx) = mpsc::channel(100);
     let (push_tx, push_rx) = mpsc::channel(100);
 
-    // 启动读取任务
+    // 启动读取任务，根据消息类型路由到正确的通道
     tokio::spawn(async move {
         let mut line = String::new();
         loop {
@@ -407,8 +409,19 @@ async fn finish_connect(config: ClientConfig, stream: Stream) -> Result<AgentCli
             match reader.read_line(&mut line).await {
                 Ok(0) => break, // 连接关闭
                 Ok(_) => {
-                    if push_tx.send(line.trim().to_string()).await.is_err() {
-                        break;
+                    let trimmed = line.trim().to_string();
+
+                    // 尝试解析为 Response
+                    if let Ok(_) = serde_json::from_str::<crate::protocol::Response>(&trimmed) {
+                        // 是 Response，发送到 response 通道
+                        if response_tx.send(trimmed).await.is_err() {
+                            break;
+                        }
+                    } else {
+                        // 不是 Response，当作 Push 处理
+                        if push_tx.send(trimmed).await.is_err() {
+                            break;
+                        }
                     }
                 }
                 Err(_) => break,
@@ -419,6 +432,7 @@ async fn finish_connect(config: ClientConfig, stream: Stream) -> Result<AgentCli
     Ok(AgentClient {
         config,
         writer,
+        response_rx,
         push_rx,
     })
 }

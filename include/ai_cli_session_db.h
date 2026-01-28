@@ -237,6 +237,18 @@ typedef struct SessionMetaC {
     char *session_path;
     int64_t file_mtime;
     int64_t message_count;
+    /**
+     * 最后一条消息类型 ("user" / "assistant")
+     */
+    char *last_message_type;
+    /**
+     * 最后一条消息预览（纯文本，100 字符）
+     */
+    char *last_message_preview;
+    /**
+     * 最后一条消息时间戳（毫秒），-1 表示无
+     */
+    int64_t last_message_at;
 } SessionMetaC;
 
 /**

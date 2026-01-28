@@ -19,6 +19,142 @@ use crate::{
     Source,
 };
 
+/// 生成消息预览（最多 100 个 Unicode 字符）
+fn generate_preview(message: &ParsedMessage) -> String {
+    match message.message_type {
+        MessageType::User => {
+            // 用户消息：直接使用纯文本内容
+            truncate_chars(&message.content.text, 100)
+        }
+        MessageType::Assistant => {
+            // 助手消息：尝试解析 content 数组生成摘要
+            match &message.raw {
+                Some(raw) => generate_assistant_preview(raw, &message.content.text),
+                None => truncate_chars(&message.content.text, 100),
+            }
+        }
+        _ => message.content.text.chars().take(100).collect(),
+    }
+}
+
+/// 生成助手消息预览
+fn generate_assistant_preview(raw: &str, fallback_text: &str) -> String {
+    // 尝试解析 raw JSON 获取 content 数组
+    if let Ok(json) = serde_json::from_str::<serde_json::Value>(raw) {
+        if let Some(message) = json.get("message") {
+            if let Some(content) = message.get("content") {
+                if let Some(arr) = content.as_array() {
+                    return generate_preview_from_content_blocks(arr);
+                }
+            }
+        }
+    }
+
+    // 降级：使用纯文本
+    truncate_chars(fallback_text, 100)
+}
+
+/// 从 content blocks 生成预览
+fn generate_preview_from_content_blocks(blocks: &[serde_json::Value]) -> String {
+    let mut result = String::new();
+    let mut has_text = false;
+    let mut has_thinking_only = true;
+
+    for block in blocks {
+        let block_type = block.get("type").and_then(|t| t.as_str()).unwrap_or("");
+
+        match block_type {
+            "text" => {
+                has_text = true;
+                has_thinking_only = false;
+                if let Some(text) = block.get("text").and_then(|t| t.as_str()) {
+                    if !result.is_empty() {
+                        result.push(' ');
+                    }
+                    result.push_str(text);
+                }
+            }
+            "tool_use" => {
+                has_thinking_only = false;
+                let name = block.get("name").and_then(|n| n.as_str()).unwrap_or("tool");
+                let preview = generate_tool_use_preview(name, block.get("input"));
+                if !result.is_empty() {
+                    result.push(' ');
+                }
+                result.push_str(&preview);
+            }
+            "thinking" => {
+                // 跳过 thinking，但记录存在
+            }
+            _ => {
+                has_thinking_only = false;
+            }
+        }
+    }
+
+    // 如果只有 thinking 块
+    if has_thinking_only && !has_text && result.is_empty() {
+        return "💭 思考中...".to_string();
+    }
+
+    // 如果结果为空
+    if result.is_empty() {
+        return "（空消息）".to_string();
+    }
+
+    truncate_chars(&result, 100)
+}
+
+/// 生成 tool_use 预览
+fn generate_tool_use_preview(name: &str, input: Option<&serde_json::Value>) -> String {
+    let param = input
+        .and_then(|i| match name {
+            "Bash" => i.get("command").and_then(|c| c.as_str()),
+            "Read" | "Write" | "Edit" => i.get("file_path").and_then(|f| {
+                f.as_str().map(|s| {
+                    // 只取文件名
+                    std::path::Path::new(s)
+                        .file_name()
+                        .and_then(|n| n.to_str())
+                        .unwrap_or(s)
+                })
+            }),
+            "Glob" | "Grep" => i.get("pattern").and_then(|p| p.as_str()),
+            _ => None,
+        })
+        .map(|s| truncate_chars(s, 30));
+
+    match param {
+        Some(p) => format!("🔧 {}: {}", name, p),
+        None => format!("🔧 {}", name),
+    }
+}
+
+/// 按 Unicode 字符截断
+fn truncate_chars(s: &str, max_chars: usize) -> String {
+    let chars: Vec<char> = s.chars().take(max_chars).collect();
+    if s.chars().count() > max_chars {
+        let mut result: String = chars.into_iter().collect();
+        result.push_str("...");
+        result
+    } else {
+        chars.into_iter().collect()
+    }
+}
+
+/// 解析时间戳为毫秒
+fn parse_timestamp_to_millis(ts: &str) -> Option<i64> {
+    // 尝试解析 RFC3339 格式
+    if let Ok(dt) = chrono::DateTime::parse_from_rfc3339(ts) {
+        return Some(dt.timestamp_millis());
+    }
+    // 尝试解析纯数字（假设是毫秒）
+    if let Ok(millis) = ts.parse::<i64>() {
+        return Some(millis);
+    }
+    None
+}
+
 /// 排序方向
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Order {
@@ -298,6 +434,42 @@ impl SessionReader {
         sessions
     }
 
+    /// 列出会话（带最后消息预览）
+    pub fn list_sessions_with_preview(
+        &mut self,
+        project_path: Option<&str>,
+        include_agents: bool,
+    ) -> Vec<SessionMeta> {
+        let mut sessions = self.list_sessions(project_path, include_agents);
+
+        // 为每个 session 填充 lastMessage 预览
+        for session in &mut sessions {
+            if let Some(session_path) = &session.session_path {
+                if let Some(last_msg) = self.read_last_message(session_path) {
+                    session.last_message_type = Some(match last_msg.message_type {
+                        MessageType::User => "user".to_string(),
+                        MessageType::Assistant => "assistant".to_string(),
+                        _ => "system".to_string(),
+                    });
+                    session.last_message_preview = Some(generate_preview(&last_msg));
+                    session.last_message_at = last_msg
+                        .timestamp
+                        .as_ref()
+                        .and_then(|ts| parse_timestamp_to_millis(ts));
+                }
+            }
+        }
+
+        sessions
+    }
+
+    /// 读取最后一条消息
+    fn read_last_message(&self, session_path: &str) -> Option<ParsedMessage> {
+        // 使用 read_messages 获取最后一条
+        let result = self.read_messages(session_path, 1, 0, Order::Desc)?;
+        result.messages.into_iter().next()
+    }
+
     /// 查找最新会话
     pub fn find_latest_session(
         &mut self,
@@ -410,6 +582,9 @@ impl SessionReader {
             meta: None,
             created_at: None,
             updated_at: None,
+            last_message_type: None,
+            last_message_preview: None,
+            last_message_at: None,
         };
 
         let result = self.adapter.parse_session(&meta).ok()??;

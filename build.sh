@@ -42,6 +42,10 @@ log_error() { echo -e "${RED}[$PROJECT_NAME]${NC} $*"; }
 # 编译（指定 target-dir 避免被 workspace 覆盖）
 log_info "Building FFI dylib..."
 cd "$SCRIPT_DIR"
+
+# 强制触发重新编译，避免 Cargo 增量编译缓存导致修改未生效
+touch "$SCRIPT_DIR/src/lib.rs"
+
 cargo build --release --features ffi,fts,client --target-dir "$SCRIPT_DIR/target"
 
 DYLIB="$SCRIPT_DIR/target/release/libai_cli_session_db.dylib"

@@ -184,6 +184,9 @@ pub struct SessionWithProject {
     // 时间戳
     pub created_at: i64,
     pub updated_at: i64,
+    // 最后一条消息预览（V5）
+    pub last_message_type: Option<String>,
+    pub last_message_preview: Option<String>,
 }
 
 /// Talk 摘要 (Compact 结果)

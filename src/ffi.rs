@@ -1847,6 +1847,12 @@ pub struct SessionMetaC {
     pub session_path: *mut c_char,
     pub file_mtime: i64,    // -1 表示无
     pub message_count: i64, // -1 表示无
+    /// 最后一条消息类型 ("user" / "assistant")
+    pub last_message_type: *mut c_char,
+    /// 最后一条消息预览（纯文本，100 字符）
+    pub last_message_preview: *mut c_char,
+    /// 最后一条消息时间戳（毫秒），-1 表示无
+    pub last_message_at: i64,
 }
 
 /// SessionMeta 数组
@@ -1899,8 +1905,9 @@ pub unsafe extern "C" fn session_db_list_session_metas(
         };
 
         // 使用 SessionReader 统一的业务逻辑（默认过滤 agent session）
+        // 使用 with_preview 版本获取最后消息预览
         let mut reader = SessionReader::new(path);
-        let sessions = reader.list_sessions(filter_project, false); // include_agents = false
+        let sessions = reader.list_sessions_with_preview(filter_project, false); // include_agents = false
 
         Ok(sessions)
     }));
@@ -1941,6 +1948,20 @@ pub unsafe extern "C" fn session_db_list_session_metas(
                     },
                     None => std::ptr::null_mut(),
                 };
+                let last_message_type_c = match s.last_message_type {
+                    Some(t) => match CString::new(t) {
+                        Ok(c) => c.into_raw(),
+                        Err(_) => std::ptr::null_mut(),
+                    },
+                    None => std::ptr::null_mut(),
+                };
+                let last_message_preview_c = match s.last_message_preview {
+                    Some(p) => match CString::new(p) {
+                        Ok(c) => c.into_raw(),
+                        Err(_) => std::ptr::null_mut(),
+                    },
+                    None => std::ptr::null_mut(),
+                };
 
                 c_sessions.push(SessionMetaC {
                     id: id_c,
@@ -1950,6 +1971,9 @@ pub unsafe extern "C" fn session_db_list_session_metas(
                     session_path: session_path_c,
                     file_mtime: s.file_mtime.map(|t| t as i64).unwrap_or(-1),
                     message_count: s.message_count.map(|c| c as i64).unwrap_or(-1),
+                    last_message_type: last_message_type_c,
+                    last_message_preview: last_message_preview_c,
+                    last_message_at: s.last_message_at.unwrap_or(-1),
                 });
             }
 
@@ -2000,6 +2024,12 @@ pub unsafe extern "C" fn session_db_free_session_meta_list(array: *mut SessionMe
             }
             if !s.session_path.is_null() {
                 drop(CString::from_raw(s.session_path));
+            }
+            if !s.last_message_type.is_null() {
+                drop(CString::from_raw(s.last_message_type));
+            }
+            if !s.last_message_preview.is_null() {
+                drop(CString::from_raw(s.last_message_preview));
             }
         }
     }
@@ -2104,6 +2134,21 @@ pub unsafe extern "C" fn session_db_find_latest_session(
         },
         file_mtime: first.file_mtime,
         message_count: first.message_count,
+        last_message_type: if first.last_message_type.is_null() {
+            std::ptr::null_mut()
+        } else {
+            CString::new(CStr::from_ptr(first.last_message_type).to_str().unwrap_or(""))
+                .map(|s| s.into_raw())
+                .unwrap_or(std::ptr::null_mut())
+        },
+        last_message_preview: if first.last_message_preview.is_null() {
+            std::ptr::null_mut()
+        } else {
+            CString::new(CStr::from_ptr(first.last_message_preview).to_str().unwrap_or(""))
+                .map(|s| s.into_raw())
+                .unwrap_or(std::ptr::null_mut())
+        },
+        last_message_at: first.last_message_at,
     });
 
     *out_session = Box::into_raw(copy);
@@ -2137,6 +2182,12 @@ pub unsafe extern "C" fn session_db_free_session_meta(session: *mut SessionMetaC
     }
     if !s.session_path.is_null() {
         drop(CString::from_raw(s.session_path));
+    }
+    if !s.last_message_type.is_null() {
+        drop(CString::from_raw(s.last_message_type));
+    }
+    if !s.last_message_preview.is_null() {
+        drop(CString::from_raw(s.last_message_preview));
     }
 }
 
@@ -2212,6 +2263,9 @@ pub unsafe extern "C" fn session_db_read_session_messages(
             meta: None,
             created_at: None,
             updated_at: None,
+            last_message_type: None,
+            last_message_preview: None,
+            last_message_at: None,
         };
 
         // 使用默认路径创建 adapter（跨平台）
