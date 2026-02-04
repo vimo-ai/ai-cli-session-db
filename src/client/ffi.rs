@@ -23,8 +23,6 @@ pub enum AgentEventType {
     NewMessage = 0,
     SessionStart = 1,
     SessionEnd = 2,
-    /// Hook 事件（L2 瞬时通知）
-    HookEvent = 3,
 }
 
 impl From<EventType> for AgentEventType {
@@ -33,7 +31,6 @@ impl From<EventType> for AgentEventType {
             EventType::NewMessage => AgentEventType::NewMessage,
             EventType::SessionStart => AgentEventType::SessionStart,
             EventType::SessionEnd => AgentEventType::SessionEnd,
-            EventType::HookEvent => AgentEventType::HookEvent,
         }
     }
 }
@@ -44,7 +41,6 @@ impl From<AgentEventType> for EventType {
             AgentEventType::NewMessage => EventType::NewMessage,
             AgentEventType::SessionStart => EventType::SessionStart,
             AgentEventType::SessionEnd => EventType::SessionEnd,
-            AgentEventType::HookEvent => EventType::HookEvent,
         }
     }
 }
@@ -326,11 +322,6 @@ pub unsafe extern "C" fn agent_client_connect(handle: *mut AgentClientHandle) ->
                         "session_id": session_id,
                     });
                     (AgentEventType::SessionEnd, json.to_string())
-                }
-                Push::HookEvent(hook_event) => {
-                    // 直接序列化 HookEvent
-                    let json = serde_json::to_string(hook_event).unwrap_or_default();
-                    (AgentEventType::HookEvent, json)
                 }
             };
 

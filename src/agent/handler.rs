@@ -7,7 +7,7 @@ use std::sync::Arc;
 
 use super::broadcaster::{Broadcaster, ConnId};
 use super::watcher::FileWatcher;
-use crate::protocol::{Event, HookEvent, QueryType, Request, Response};
+use crate::protocol::{HookEvent, QueryType, Request, Response};
 use crate::SessionDB;
 
 /// Agent 版本号（跟随 crate 版本）
@@ -215,8 +215,7 @@ impl Handler {
 
     /// 处理 Hook 事件
     ///
-    /// 1. 如果有 transcript_path，触发即时 Collection
-    /// 2. 广播 HookEvent 给订阅者（用于 UI 即时反馈）
+    /// 如果有 transcript_path，触发即时 Collection
     async fn handle_hook_event(&self, event: HookEvent) -> Response {
         tracing::debug!(
             "🪝 HookEvent: type={}, session_id={}",
@@ -231,18 +230,13 @@ impl Handler {
                 tracing::info!("🪝 Before trigger_collect");
                 if let Err(e) = self.watcher.trigger_collect(path).await {
                     tracing::warn!("HookEvent collection failed: {}", e);
-                    // 不返回错误，继续广播事件
+                    // 不返回错误
                 }
                 tracing::info!("🪝 After trigger_collect");
             } else {
                 tracing::debug!("HookEvent transcript_path not found: {}", path_str);
             }
         }
-
-        // 广播 HookEvent 给订阅者
-        tracing::info!("🪝 Broadcasting HookEvent: type={}", event.event_type);
-        self.broadcaster.broadcast(Event::HookEvent(event));
-        tracing::info!("🪝 HookEvent broadcast done");
 
         Response::Ok
     }

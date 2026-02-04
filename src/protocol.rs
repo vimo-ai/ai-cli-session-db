@@ -126,7 +126,7 @@ pub enum Request {
 
     /// Hook 事件（来自 claude_hook.sh）
     ///
-    /// 触发即时 Collection 并广播给订阅者
+    /// 触发即时 Collection
     HookEvent(HookEvent),
 }
 
@@ -178,8 +178,6 @@ pub enum Push {
         session_id: String,
     },
 
-    /// Hook 事件广播（L2 瞬时通知）
-    HookEvent(HookEvent),
 }
 
 /// 事件类型（用于订阅）
@@ -188,8 +186,6 @@ pub enum EventType {
     NewMessage,
     SessionStart,
     SessionEnd,
-    /// Hook 事件（L2 瞬时通知，用于 UI 即时反馈）
-    HookEvent,
 }
 
 /// 审批状态
@@ -227,8 +223,6 @@ pub enum Event {
     SessionEnd {
         session_id: String,
     },
-    /// Hook 事件（L2 瞬时通知）
-    HookEvent(HookEvent),
 }
 
 impl Event {
@@ -238,7 +232,6 @@ impl Event {
             Event::NewMessages { .. } => EventType::NewMessage,
             Event::SessionStart { .. } => EventType::SessionStart,
             Event::SessionEnd { .. } => EventType::SessionEnd,
-            Event::HookEvent(_) => EventType::HookEvent,
         }
     }
 
@@ -266,7 +259,6 @@ impl Event {
             Event::SessionEnd { session_id } => Push::SessionEnd {
                 session_id: session_id.clone(),
             },
-            Event::HookEvent(hook_event) => Push::HookEvent(hook_event.clone()),
         }
     }
 }
@@ -367,69 +359,6 @@ mod tests {
     }
 
     #[test]
-    fn test_event_type_hook_event() {
-        let hook_event = HookEvent {
-            event_type: "Stop".to_string(),
-            session_id: "test".to_string(),
-            transcript_path: None,
-            cwd: None,
-            prompt: None,
-            tool_name: None,
-            tool_input: None,
-            tool_use_id: None,
-            notification_type: None,
-            message: None,
-            context: None,
-        };
-
-        let event = Event::HookEvent(hook_event.clone());
-        assert_eq!(event.event_type(), EventType::HookEvent);
-
-        // to_push 转换
-        let push = event.to_push();
-        match push {
-            Push::HookEvent(e) => {
-                assert_eq!(e.event_type, "Stop");
-                assert_eq!(e.session_id, "test");
-            }
-            _ => panic!("Expected Push::HookEvent"),
-        }
-    }
-
-    #[test]
-    fn test_push_hook_event_serialize() {
-        let hook_event = HookEvent {
-            event_type: "SessionEnd".to_string(),
-            session_id: "test-session".to_string(),
-            transcript_path: Some("/path/to/file.jsonl".to_string()),
-            cwd: None,
-            prompt: None,
-            tool_name: None,
-            tool_input: None,
-            tool_use_id: None,
-            notification_type: None,
-            message: None,
-            context: None,
-        };
-
-        let push = Push::HookEvent(hook_event);
-        let json = serde_json::to_string(&push).unwrap();
-
-        assert!(json.contains("\"type\":\"HookEvent\""));
-        assert!(json.contains("\"event_type\":\"SessionEnd\""));
-    }
-
-    #[test]
-    fn test_event_type_subscribe() {
-        // 验证 HookEvent 可以被订阅
-        let events = vec![EventType::NewMessage, EventType::HookEvent];
-        let request = Request::Subscribe { events };
-        let json = serde_json::to_string(&request).unwrap();
-
-        assert!(json.contains("\"HookEvent\""));
-    }
-
-    #[test]
     fn test_hook_event_with_context() {
         // ETerm 场景：context 包含 terminal_id
         let event = HookEvent {
@@ -478,37 +407,4 @@ mod tests {
         }
     }
 
-    #[test]
-    fn test_hook_event_context_transparent() {
-        // vimo-agent 透传 context，不解析内容
-        let hook_event = HookEvent {
-            event_type: "Stop".to_string(),
-            session_id: "test".to_string(),
-            transcript_path: None,
-            cwd: None,
-            prompt: None,
-            tool_name: None,
-            tool_input: None,
-            tool_use_id: None,
-            notification_type: None,
-            message: None,
-            context: Some(serde_json::json!({
-                "terminal_id": 42,
-                "custom_data": {"nested": true}
-            })),
-        };
-
-        // Event → Push 转换应保留 context
-        let event = Event::HookEvent(hook_event);
-        let push = event.to_push();
-
-        match push {
-            Push::HookEvent(e) => {
-                let ctx = e.context.unwrap();
-                assert_eq!(ctx["terminal_id"], 42);
-                assert_eq!(ctx["custom_data"]["nested"], true);
-            }
-            _ => panic!("Expected Push::HookEvent"),
-        }
-    }
 }
