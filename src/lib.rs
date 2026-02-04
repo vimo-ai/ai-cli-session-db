@@ -43,7 +43,7 @@ pub mod collector;
 pub mod search;
 
 #[cfg(feature = "search")]
-pub use search::escape_fts5_query;
+pub use search::{escape_fts5_query, escape_like_pattern};
 
 #[cfg(feature = "ffi")]
 pub mod ffi;

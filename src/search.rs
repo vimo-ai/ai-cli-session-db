@@ -8,6 +8,15 @@ use crate::types::{SearchOrderBy, SearchResult};
 #[allow(unused_imports)]
 use rusqlite::params;
 
+/// 转义 LIKE 模式中的通配符（`%` 和 `_`），使用 `\` 作为转义字符
+///
+/// 配合 SQL 中的 `ESCAPE '\'` 使用
+pub fn escape_like_pattern(s: &str) -> String {
+    s.replace('\\', "\\\\")
+        .replace('%', "\\%")
+        .replace('_', "\\_")
+}
+
 /// 转义 FTS5 查询中的特殊字符
 ///
 /// FTS5 特殊字符包括：
@@ -96,6 +105,38 @@ impl SessionDB {
         start_timestamp: Option<i64>,
         end_timestamp: Option<i64>,
     ) -> Result<Vec<SearchResult>> {
+        self.search_fts_full_with_sessions(
+            query,
+            limit,
+            project_id,
+            order_by,
+            start_timestamp,
+            end_timestamp,
+            &[],
+        )
+    }
+
+    /// FTS5 全文搜索 (完整参数版本，含日期范围和 session 过滤)
+    ///
+    /// # Arguments
+    /// - `query`: 搜索关键词
+    /// - `limit`: 返回数量
+    /// - `project_id`: 项目 ID 过滤（可选）
+    /// - `order_by`: 排序方式
+    /// - `start_timestamp`: 开始时间戳（毫秒，可选）
+    /// - `end_timestamp`: 结束时间戳（毫秒，可选）
+    /// - `session_ids`: Session ID 前缀列表（空则不过滤）
+    #[allow(clippy::too_many_arguments)]
+    pub fn search_fts_full_with_sessions(
+        &self,
+        query: &str,
+        limit: usize,
+        project_id: Option<i64>,
+        order_by: SearchOrderBy,
+        start_timestamp: Option<i64>,
+        end_timestamp: Option<i64>,
+        session_ids: &[String],
+    ) -> Result<Vec<SearchResult>> {
         // 先用 FTS5 搜索
         let fts_results = self.search_fts_internal(
             query,
@@ -104,6 +145,7 @@ impl SessionDB {
             order_by,
             start_timestamp,
             end_timestamp,
+            session_ids,
         )?;
 
         // FTS 结果足够，直接返回
@@ -124,6 +166,7 @@ impl SessionDB {
                 start_timestamp,
                 end_timestamp,
                 &existing_ids,
+                session_ids,
             )?;
 
             let mut combined = fts_results;
@@ -135,6 +178,7 @@ impl SessionDB {
     }
 
     /// FTS5 内部搜索实现
+    #[allow(clippy::too_many_arguments)]
     fn search_fts_internal(
         &self,
         query: &str,
@@ -143,6 +187,7 @@ impl SessionDB {
         order_by: SearchOrderBy,
         start_timestamp: Option<i64>,
         end_timestamp: Option<i64>,
+        session_ids: &[String],
     ) -> Result<Vec<SearchResult>> {
         let conn = self.conn.lock();
 
@@ -178,6 +223,20 @@ impl SessionDB {
             where_clauses.push(format!("m.timestamp <= ?{}", param_idx));
             params_vec.push(Box::new(end_ts));
             param_idx += 1;
+        }
+
+        // Session ID 前缀过滤
+        if !session_ids.is_empty() {
+            let session_likes: Vec<String> = session_ids
+                .iter()
+                .enumerate()
+                .map(|(i, _)| format!("m.session_id LIKE ?{} ESCAPE '\\'", param_idx + i))
+                .collect();
+            where_clauses.push(format!("({})", session_likes.join(" OR ")));
+            for sid in session_ids {
+                params_vec.push(Box::new(format!("{}%", escape_like_pattern(sid))));
+            }
+            param_idx += session_ids.len();
         }
 
         // LIMIT 参数
@@ -243,6 +302,7 @@ impl SessionDB {
         start_timestamp: Option<i64>,
         end_timestamp: Option<i64>,
         exclude_ids: &[i64],
+        session_ids: &[String],
     ) -> Result<Vec<SearchResult>> {
         let conn = self.conn.lock();
 
@@ -290,6 +350,20 @@ impl SessionDB {
                 params_vec.push(Box::new(*id));
             }
             param_idx += exclude_ids.len();
+        }
+
+        // Session ID 前缀过滤
+        if !session_ids.is_empty() {
+            let session_likes: Vec<String> = session_ids
+                .iter()
+                .enumerate()
+                .map(|(i, _)| format!("m.session_id LIKE ?{} ESCAPE '\\'", param_idx + i))
+                .collect();
+            where_clauses.push(format!("({})", session_likes.join(" OR ")));
+            for sid in session_ids {
+                params_vec.push(Box::new(format!("{}%", escape_like_pattern(sid))));
+            }
+            param_idx += session_ids.len();
         }
 
         params_vec.push(Box::new(limit as i64));
