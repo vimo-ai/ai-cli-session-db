@@ -26,7 +26,7 @@ use tokio::time::interval;
 #[cfg(unix)]
 use std::os::unix::fs::PermissionsExt;
 
-use super::broadcaster::Broadcaster;
+use super::broadcaster::ConnectionManager;
 use super::handler::Handler;
 use super::watcher::FileWatcher;
 use crate::protocol::{Request, Response};
@@ -96,7 +96,7 @@ pub struct Agent {
     config: AgentConfig,
     #[allow(dead_code)] // 预留，未来扩展功能使用
     db: Arc<SessionDB>,
-    broadcaster: Arc<Broadcaster>,
+    connections: Arc<ConnectionManager>,
     watcher: Arc<FileWatcher>,
     handler: Arc<Handler>,
     shutdown: Arc<AtomicBool>,
@@ -115,19 +115,19 @@ impl Agent {
         let db_config = DbConfig::local(config.db_path().to_str().unwrap());
         let db = Arc::new(SessionDB::connect(db_config)?);
 
-        // 创建广播器
-        let broadcaster = Broadcaster::new();
+        // 创建连接管理器
+        let connections = ConnectionManager::new();
 
         // 创建文件监听器
-        let watcher = FileWatcher::new(db.clone(), broadcaster.clone());
+        let watcher = FileWatcher::new(db.clone());
 
         // 创建处理器
-        let handler = Arc::new(Handler::new(db.clone(), broadcaster.clone(), watcher.clone()));
+        let handler = Arc::new(Handler::new(db.clone(), connections.clone(), watcher.clone()));
 
         Ok(Self {
             config,
             db,
-            broadcaster,
+            connections,
             watcher,
             handler,
             shutdown: Arc::new(AtomicBool::new(false)),
@@ -200,7 +200,7 @@ impl Agent {
         loop {
             // 只有当 shutdown 信号发出 且 没有活跃连接 时才退出
             // 这样新连接进来后可以取消退出
-            if self.shutdown.load(Ordering::Relaxed) && !self.broadcaster.has_connections() {
+            if self.shutdown.load(Ordering::Relaxed) && !self.connections.has_connections() {
                 break;
             }
 
@@ -244,7 +244,7 @@ impl Agent {
         let (tx, mut rx) = mpsc::channel::<String>(100);
 
         // 注册连接
-        let conn_id = self.broadcaster.register(tx);
+        let conn_id = self.connections.register(tx);
         tracing::debug!("📥 New connection: conn_id={}", conn_id);
 
         // 启动发送任务
@@ -276,7 +276,7 @@ impl Agent {
                                 message: format!("Invalid JSON: {}", e),
                             };
                             let resp_json = serde_json::to_string(&response)?;
-                            self.broadcaster.try_send_to(conn_id, format!("{}\n", resp_json));
+                            self.connections.try_send_to(conn_id, format!("{}\n", resp_json));
                             continue;
                         }
                     };
@@ -286,7 +286,7 @@ impl Agent {
                     let resp_json = serde_json::to_string(&response)?;
 
                     // 发送响应
-                    if !self.broadcaster.send_to(conn_id, format!("{}\n", resp_json)).await {
+                    if !self.connections.send_to(conn_id, format!("{}\n", resp_json)).await {
                         break;
                     }
                 }
@@ -298,7 +298,7 @@ impl Agent {
         }
 
         // 清理
-        self.broadcaster.unregister(conn_id);
+        self.connections.unregister(conn_id);
         write_handle.abort();
         tracing::debug!("📤 Connection closed: conn_id={}", conn_id);
 
@@ -314,7 +314,7 @@ impl Agent {
         loop {
             check_interval.tick().await;
 
-            if self.broadcaster.has_connections() {
+            if self.connections.has_connections() {
                 // 有连接时重置状态
                 idle_count = 0;
                 // 如果之前设置了 shutdown，现在取消它

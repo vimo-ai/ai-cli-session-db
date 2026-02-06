@@ -12,15 +12,6 @@
 #include "stddef.h"
 
 /**
- * 事件类型（FFI 友好）
- */
-typedef enum AgentEventType {
-    NewMessage = 0,
-    SessionStart = 1,
-    SessionEnd = 2,
-} AgentEventType;
-
-/**
  * 审批状态 C 枚举
  * 0 = Pending, 1 = Approved, 2 = Rejected, 3 = Timeout
  */
@@ -289,25 +280,6 @@ typedef struct CollectResultC {
      */
     char *first_error;
 } CollectResultC;
-
-/**
- * 推送回调函数类型
- *
- * - `event_type`: 事件类型
- * - `data_json`: 事件数据（JSON 格式）
- * - `user_data`: 用户数据指针
- */
-typedef void (*AgentPushCallback)(enum AgentEventType event_type,
-                                  const char *data_json,
-                                  void *user_data);
-
-/**
- * 断开连接回调函数类型
- *
- * - `error_message`: 错误信息（可能为 null）
- * - `user_data`: 用户数据指针
- */
-typedef void (*AgentDisconnectCallback)(const char *error_message, void *user_data);
 
 /**
  * 连接数据库
@@ -783,17 +755,6 @@ void agent_client_destroy(struct AgentClientHandle *handle);
 enum FfiError agent_client_connect(struct AgentClientHandle *handle);
 
 /**
- * 订阅事件
- *
- * # Safety
- * - `handle` 必须是有效句柄
- * - `events` 和 `events_count` 必须有效
- */
-enum FfiError agent_client_subscribe(struct AgentClientHandle *handle,
-                                     const enum AgentEventType *events,
-                                     uintptr_t events_count);
-
-/**
  * 通知文件变化
  *
  * # Safety
@@ -813,30 +774,6 @@ enum FfiError agent_client_write_approve_result(struct AgentClientHandle *handle
                                                 const char *tool_call_id,
                                                 enum ApprovalStatusC status,
                                                 int64_t resolved_at);
-
-/**
- * 设置推送回调
- *
- * # Safety
- * - `handle` 必须是有效句柄
- * - `callback` 和 `user_data` 在 handle 生命周期内必须有效
- */
-void agent_client_set_push_callback(struct AgentClientHandle *handle,
-                                    AgentPushCallback callback,
-                                    void *user_data);
-
-/**
- * 设置断开连接回调
- *
- * 当 Agent 连接意外断开时（如 Agent 被 kill），会调用此回调。
- *
- * # Safety
- * - `handle` 必须是有效句柄
- * - `callback` 和 `user_data` 在 handle 生命周期内必须有效
- */
-void agent_client_set_disconnect_callback(struct AgentClientHandle *handle,
-                                          AgentDisconnectCallback callback,
-                                          void *user_data);
 
 /**
  * 检查是否已连接

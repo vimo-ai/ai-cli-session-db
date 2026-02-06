@@ -1270,7 +1270,7 @@ mod writer_conversion_tests {
 #[cfg(all(feature = "agent", feature = "client"))]
 mod agent_client_tests {
     use ai_cli_session_db::agent::{Agent, AgentConfig};
-    use ai_cli_session_db::protocol::{EventType, QueryType, Request, Response};
+    use ai_cli_session_db::protocol::{QueryType, Request, Response};
     use std::sync::Arc;
     use std::time::Duration;
     use tempfile::TempDir;
@@ -1333,7 +1333,7 @@ mod agent_client_tests {
     }
 
     #[tokio::test]
-    async fn test_agent_client_subscribe_and_heartbeat() {
+    async fn test_agent_client_heartbeat() {
         let (agent_config, _tmp) = test_agent_config();
         let socket_path = agent_config.socket_path();
 
@@ -1363,20 +1363,6 @@ mod agent_client_tests {
 
         let mut line = String::new();
         reader.read_line(&mut line).await.unwrap();
-
-        // 订阅
-        line.clear();
-        let subscribe = Request::Subscribe {
-            events: vec![EventType::NewMessage, EventType::SessionStart],
-        };
-        writer
-            .write_all(format!("{}\n", serde_json::to_string(&subscribe).unwrap()).as_bytes())
-            .await
-            .unwrap();
-
-        reader.read_line(&mut line).await.unwrap();
-        let response: Response = serde_json::from_str(&line).unwrap();
-        assert!(matches!(response, Response::Ok));
 
         // 心跳
         line.clear();
@@ -1505,67 +1491,6 @@ mod agent_client_tests {
         agent_handle.abort();
     }
 
-    #[tokio::test]
-    async fn test_unsubscribe() {
-        let (agent_config, _tmp) = test_agent_config();
-        let socket_path = agent_config.socket_path();
-
-        let agent = Arc::new(Agent::new(agent_config).unwrap());
-        let agent_handle = {
-            let agent = agent.clone();
-            tokio::spawn(async move {
-                let _ = agent.run().await;
-            })
-        };
-
-        sleep(Duration::from_millis(500)).await;
-
-        let stream = UnixStream::connect(&socket_path).await.unwrap();
-        let (reader, mut writer) = stream.into_split();
-        let mut reader = BufReader::new(reader);
-
-        // 握手
-        let handshake = Request::Handshake {
-            component: "test".to_string(),
-            version: "1.0.0".to_string(),
-        };
-        writer
-            .write_all(format!("{}\n", serde_json::to_string(&handshake).unwrap()).as_bytes())
-            .await
-            .unwrap();
-
-        let mut line = String::new();
-        reader.read_line(&mut line).await.unwrap();
-
-        // 订阅
-        line.clear();
-        let subscribe = Request::Subscribe {
-            events: vec![EventType::NewMessage],
-        };
-        writer
-            .write_all(format!("{}\n", serde_json::to_string(&subscribe).unwrap()).as_bytes())
-            .await
-            .unwrap();
-
-        reader.read_line(&mut line).await.unwrap();
-        assert!(matches!(serde_json::from_str::<Response>(&line).unwrap(), Response::Ok));
-
-        // 取消订阅
-        line.clear();
-        let unsubscribe = Request::Unsubscribe {
-            events: vec![EventType::NewMessage],
-        };
-        writer
-            .write_all(format!("{}\n", serde_json::to_string(&unsubscribe).unwrap()).as_bytes())
-            .await
-            .unwrap();
-
-        reader.read_line(&mut line).await.unwrap();
-        let response: Response = serde_json::from_str(&line).unwrap();
-        assert!(matches!(response, Response::Ok));
-
-        agent_handle.abort();
-    }
 
     #[tokio::test]
     async fn test_connection_count_query() {

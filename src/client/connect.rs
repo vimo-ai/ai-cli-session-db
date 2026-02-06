@@ -233,8 +233,6 @@ pub struct AgentClient {
     writer: WriteHalf<Stream>,
     /// Response 接收通道（用于 request/response 模式）
     response_rx: mpsc::Receiver<String>,
-    /// Push 事件接收通道（用于订阅推送）
-    push_rx: mpsc::Receiver<String>,
 }
 
 impl AgentClient {
@@ -254,20 +252,6 @@ impl AgentClient {
         // 解析响应
         let response: crate::protocol::Response = serde_json::from_str(&response_line)?;
         Ok(response)
-    }
-
-    /// 订阅事件
-    pub async fn subscribe(&mut self, events: Vec<crate::protocol::EventType>) -> Result<()> {
-        let request = crate::protocol::Request::Subscribe { events };
-        let response = self.request(&request).await?;
-
-        match response {
-            crate::protocol::Response::Ok => Ok(()),
-            crate::protocol::Response::Error { code, message } => {
-                Err(anyhow::anyhow!("Subscribe failed: {} (code={})", message, code))
-            }
-            _ => Err(anyhow::anyhow!("Unexpected response")),
-        }
     }
 
     /// 通知文件变化
@@ -305,17 +289,6 @@ impl AgentClient {
             }
             _ => Err(anyhow::anyhow!("Unexpected response")),
         }
-    }
-
-    /// 接收推送事件
-    pub async fn recv_push(&mut self) -> Option<crate::protocol::Push> {
-        let line = self.push_rx.recv().await?;
-        serde_json::from_str(&line).ok()
-    }
-
-    /// 获取推送接收器（用于 select!）
-    pub fn push_receiver(&mut self) -> &mut mpsc::Receiver<String> {
-        &mut self.push_rx
     }
 }
 
@@ -506,11 +479,10 @@ async fn finish_connect(config: ClientConfig, stream: Stream) -> Result<AgentCli
         }
     }
 
-    // 创建分离的通道：Response 和 Push 各自独立
+    // 创建响应通道
     let (response_tx, response_rx) = mpsc::channel(100);
-    let (push_tx, push_rx) = mpsc::channel(100);
 
-    // 启动读取任务，根据消息类型路由到正确的通道
+    // 启动读取任务，所有消息发送到 response 通道
     tokio::spawn(async move {
         let mut line = String::new();
         loop {
@@ -519,18 +491,8 @@ async fn finish_connect(config: ClientConfig, stream: Stream) -> Result<AgentCli
                 Ok(0) => break, // 连接关闭
                 Ok(_) => {
                     let trimmed = line.trim().to_string();
-
-                    // 尝试解析为 Response
-                    if serde_json::from_str::<crate::protocol::Response>(&trimmed).is_ok() {
-                        // 是 Response，发送到 response 通道
-                        if response_tx.send(trimmed).await.is_err() {
-                            break;
-                        }
-                    } else {
-                        // 不是 Response，当作 Push 处理
-                        if push_tx.send(trimmed).await.is_err() {
-                            break;
-                        }
+                    if response_tx.send(trimmed).await.is_err() {
+                        break;
                     }
                 }
                 Err(_) => break,
@@ -542,7 +504,6 @@ async fn finish_connect(config: ClientConfig, stream: Stream) -> Result<AgentCli
         config,
         writer,
         response_rx,
-        push_rx,
     })
 }
 

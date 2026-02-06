@@ -5,7 +5,7 @@
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
-use super::broadcaster::{Broadcaster, ConnId};
+use super::broadcaster::{ConnectionManager, ConnId};
 use super::watcher::FileWatcher;
 use crate::protocol::{HookEvent, QueryType, Request, Response};
 use crate::SessionDB;
@@ -17,18 +17,18 @@ pub const AGENT_VERSION: &str = env!("CARGO_PKG_VERSION");
 pub struct Handler {
     /// 数据库连接
     db: Arc<SessionDB>,
-    /// 广播器
-    broadcaster: Arc<Broadcaster>,
+    /// 连接管理器
+    connections: Arc<ConnectionManager>,
     /// 文件监听器
     watcher: Arc<FileWatcher>,
 }
 
 impl Handler {
     /// 创建处理器
-    pub fn new(db: Arc<SessionDB>, broadcaster: Arc<Broadcaster>, watcher: Arc<FileWatcher>) -> Self {
+    pub fn new(db: Arc<SessionDB>, connections: Arc<ConnectionManager>, watcher: Arc<FileWatcher>) -> Self {
         Self {
             db,
-            broadcaster,
+            connections,
             watcher,
         }
     }
@@ -50,16 +50,6 @@ impl Handler {
 
             Request::NotifyFileChange { path } => {
                 self.handle_file_change(path).await
-            }
-
-            Request::Subscribe { events } => {
-                self.broadcaster.subscribe(conn_id, events);
-                Response::Ok
-            }
-
-            Request::Unsubscribe { events } => {
-                self.broadcaster.unsubscribe(conn_id, events);
-                Response::Ok
             }
 
             Request::WriteIndexResult {
@@ -200,12 +190,12 @@ impl Handler {
             QueryType::Status => {
                 let status = serde_json::json!({
                     "agent_version": AGENT_VERSION,
-                    "connections": self.broadcaster.connection_count(),
+                    "connections": self.connections.connection_count(),
                 });
                 Response::QueryResult { data: status }
             }
             QueryType::ConnectionCount => {
-                let count = self.broadcaster.connection_count();
+                let count = self.connections.connection_count();
                 Response::QueryResult {
                     data: serde_json::json!({ "count": count }),
                 }

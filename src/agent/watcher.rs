@@ -12,23 +12,19 @@ use notify::RecursiveMode;
 use notify_debouncer_mini::{new_debouncer, DebouncedEventKind};
 use tokio::sync::mpsc;
 
-use super::broadcaster::Broadcaster;
-use crate::protocol::Event;
 use crate::{all_watch_configs, Collector, SessionDB};
 
 /// 文件监听器
 pub struct FileWatcher {
     /// 数据库连接
     db: Arc<SessionDB>,
-    /// 广播器
-    broadcaster: Arc<Broadcaster>,
     /// 支持的文件扩展名
     supported_extensions: HashSet<String>,
 }
 
 impl FileWatcher {
     /// 创建文件监听器
-    pub fn new(db: Arc<SessionDB>, broadcaster: Arc<Broadcaster>) -> Arc<Self> {
+    pub fn new(db: Arc<SessionDB>) -> Arc<Self> {
         // 从适配器收集所有支持的扩展名
         let supported_extensions: HashSet<String> = all_watch_configs()
             .iter()
@@ -37,7 +33,6 @@ impl FileWatcher {
 
         Arc::new(Self {
             db,
-            broadcaster,
             supported_extensions,
         })
     }
@@ -153,21 +148,6 @@ impl FileWatcher {
                 path_clone.file_name().unwrap_or_default(),
                 result.messages_inserted
             );
-
-            // 提取 session_id
-            let session_id = path_clone
-                .file_stem()
-                .and_then(|s| s.to_str())
-                .map(|s| s.to_string())
-                .unwrap_or_default();
-
-            // 广播 NewMessages 事件
-            self.broadcaster.broadcast(Event::NewMessages {
-                session_id,
-                path: path_clone,
-                count: result.messages_inserted,
-                message_ids: result.new_message_ids,
-            });
         }
 
         Ok(())

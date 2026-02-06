@@ -75,18 +75,6 @@ pub enum Request {
         path: PathBuf,
     },
 
-    /// 订阅事件
-    Subscribe {
-        /// 要订阅的事件类型
-        events: Vec<EventType>,
-    },
-
-    /// 取消订阅
-    Unsubscribe {
-        /// 要取消的事件类型
-        events: Vec<EventType>,
-    },
-
     /// 写入 Index 结果（from memex-rs）
     WriteIndexResult {
         session_id: String,
@@ -155,39 +143,6 @@ pub enum Response {
     },
 }
 
-/// 推送事件（Agent → 订阅者）
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(tag = "type")]
-pub enum Push {
-    /// 新消息
-    NewMessages {
-        session_id: String,
-        path: String,
-        count: usize,
-        message_ids: Vec<i64>,
-    },
-
-    /// 会话开始
-    SessionStart {
-        session_id: String,
-        project_path: String,
-    },
-
-    /// 会话结束（预留）
-    SessionEnd {
-        session_id: String,
-    },
-
-}
-
-/// 事件类型（用于订阅）
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
-pub enum EventType {
-    NewMessage,
-    SessionStart,
-    SessionEnd,
-}
-
 /// 审批状态
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum ApprovalStatus {
@@ -205,62 +160,6 @@ pub enum QueryType {
     Status,
     /// 获取连接数
     ConnectionCount,
-}
-
-/// 事件（内部使用，用于广播）
-#[derive(Debug, Clone)]
-pub enum Event {
-    NewMessages {
-        session_id: String,
-        path: PathBuf,
-        count: usize,
-        message_ids: Vec<i64>,
-    },
-    SessionStart {
-        session_id: String,
-        project_path: String,
-    },
-    SessionEnd {
-        session_id: String,
-    },
-}
-
-impl Event {
-    /// 获取事件类型
-    pub fn event_type(&self) -> EventType {
-        match self {
-            Event::NewMessages { .. } => EventType::NewMessage,
-            Event::SessionStart { .. } => EventType::SessionStart,
-            Event::SessionEnd { .. } => EventType::SessionEnd,
-        }
-    }
-
-    /// 转换为 Push 消息
-    pub fn to_push(&self) -> Push {
-        match self {
-            Event::NewMessages {
-                session_id,
-                path,
-                count,
-                message_ids,
-            } => Push::NewMessages {
-                session_id: session_id.clone(),
-                path: path.to_string_lossy().to_string(),
-                count: *count,
-                message_ids: message_ids.clone(),
-            },
-            Event::SessionStart {
-                session_id,
-                project_path,
-            } => Push::SessionStart {
-                session_id: session_id.clone(),
-                project_path: project_path.clone(),
-            },
-            Event::SessionEnd { session_id } => Push::SessionEnd {
-                session_id: session_id.clone(),
-            },
-        }
-    }
 }
 
 #[cfg(test)]

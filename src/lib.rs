@@ -67,7 +67,7 @@ pub use types::*;
 pub use collector::{CollectResult, Collector};
 
 // Protocol types (always available)
-pub use protocol::{ApprovalStatus as AgentApprovalStatus, Event, EventType, Push, QueryType, Request, Response};
+pub use protocol::{ApprovalStatus as AgentApprovalStatus, QueryType, Request, Response};
 
 #[cfg(feature = "agent")]
 pub use agent::{Agent, AgentConfig, cleanup_stale_agent, is_agent_running};
