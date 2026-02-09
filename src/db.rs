@@ -490,6 +490,54 @@ impl SessionDB {
         }
     }
 
+    /// 按 session_id 获取单个 SessionWithProject（JOIN 项目信息）
+    pub fn get_session_with_project(&self, session_id: &str) -> Result<Option<SessionWithProject>> {
+        let conn = self.conn.lock();
+        let mut session = conn.query_row(
+            r#"
+            SELECT s.id, s.session_id, s.project_id, p.name, p.path,
+                   s.message_count, s.last_message_at,
+                   s.cwd, s.model, s.channel, s.file_mtime, s.file_size, s.encoded_dir_name, s.meta,
+                   s.created_at, s.updated_at
+            FROM sessions s
+            INNER JOIN projects p ON s.project_id = p.id
+            WHERE s.session_id = ?1
+            "#,
+            params![session_id],
+            |row| {
+                Ok(SessionWithProject {
+                    id: row.get(0)?,
+                    session_id: row.get(1)?,
+                    project_id: row.get(2)?,
+                    project_name: row.get(3)?,
+                    project_path: row.get(4)?,
+                    message_count: row.get(5)?,
+                    last_message_at: row.get(6)?,
+                    cwd: row.get(7)?,
+                    model: row.get(8)?,
+                    channel: row.get(9)?,
+                    file_mtime: row.get(10)?,
+                    file_size: row.get(11)?,
+                    encoded_dir_name: row.get(12)?,
+                    meta: row.get(13)?,
+                    created_at: row.get(14)?,
+                    updated_at: row.get(15)?,
+                    last_message_type: None,
+                    last_message_preview: None,
+                })
+            },
+        ).optional()?;
+
+        if let Some(ref mut s) = session {
+            if let Some((msg_type, preview)) = self.get_last_message_preview_inner(&conn, &s.session_id) {
+                s.last_message_type = Some(msg_type);
+                s.last_message_preview = Some(preview);
+            }
+        }
+
+        Ok(session)
+    }
+
     /// 获取单个 Session
     pub fn get_session(&self, session_id: &str) -> Result<Option<Session>> {
         let conn = self.conn.lock();
