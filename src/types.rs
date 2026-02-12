@@ -193,6 +193,9 @@ pub struct SessionWithProject {
     // 最后一条消息预览（V5）
     pub last_message_type: Option<String>,
     pub last_message_preview: Option<String>,
+    // Session Chain 关系（V6）
+    pub children_count: Option<i64>,
+    pub parent_session_id: Option<String>,
 }
 
 /// Talk 摘要 (Compact 结果)

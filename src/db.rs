@@ -432,14 +432,63 @@ impl SessionDB {
                 updated_at: row.get(17)?,
                 last_message_type: None,
                 last_message_preview: None,
+                children_count: None,
+                parent_session_id: None,
             })
         })?.collect::<std::result::Result<Vec<_>, _>>()?;
 
-        // 为每个 session 填充最后一条消息预览
-        for session in &mut sessions {
-            if let Some((msg_type, preview)) = self.get_last_message_preview_inner(&conn, &session.session_id) {
-                session.last_message_type = Some(msg_type);
-                session.last_message_preview = Some(preview);
+        // 为每个 session 填充最后一条消息预览 + session chain 关系
+        if !sessions.is_empty() {
+            for session in &mut sessions {
+                if let Some((msg_type, preview)) = self.get_last_message_preview_inner(&conn, &session.session_id) {
+                    session.last_message_type = Some(msg_type);
+                    session.last_message_preview = Some(preview);
+                }
+            }
+
+            // 批量查询 children counts
+            let session_ids: Vec<&str> = sessions.iter().map(|s| s.session_id.as_str()).collect();
+            let placeholders: String = (0..session_ids.len()).map(|i| format!("?{}", i + 1)).collect::<Vec<_>>().join(",");
+
+            let sql = format!(
+                "SELECT parent_session_id, COUNT(DISTINCT child_session_id) FROM session_relations WHERE parent_session_id IN ({}) GROUP BY parent_session_id",
+                placeholders
+            );
+            let mut stmt = conn.prepare(&sql)?;
+            let params: Vec<&dyn rusqlite::ToSql> = session_ids.iter().map(|id| id as &dyn rusqlite::ToSql).collect();
+            let mut children_map: std::collections::HashMap<String, i64> = std::collections::HashMap::new();
+            {
+                let mut rows = stmt.query(params.as_slice())?;
+                while let Some(row) = rows.next()? {
+                    let pid: String = row.get(0)?;
+                    let count: i64 = row.get(1)?;
+                    children_map.insert(pid, count);
+                }
+            }
+
+            // 批量查询 parent session IDs
+            let sql2 = format!(
+                "SELECT child_session_id, parent_session_id FROM session_relations WHERE child_session_id IN ({})",
+                placeholders
+            );
+            let mut stmt2 = conn.prepare(&sql2)?;
+            let mut parent_map: std::collections::HashMap<String, String> = std::collections::HashMap::new();
+            {
+                let mut rows2 = stmt2.query(params.as_slice())?;
+                while let Some(row) = rows2.next()? {
+                    let cid: String = row.get(0)?;
+                    let pid: String = row.get(1)?;
+                    parent_map.insert(cid, pid);
+                }
+            }
+
+            for session in &mut sessions {
+                if let Some(&count) = children_map.get(&session.session_id) {
+                    session.children_count = Some(count);
+                }
+                if let Some(parent_id) = parent_map.get(&session.session_id) {
+                    session.parent_session_id = Some(parent_id.clone());
+                }
             }
         }
 
@@ -536,6 +585,8 @@ impl SessionDB {
                     updated_at: row.get(17)?,
                     last_message_type: None,
                     last_message_preview: None,
+                    children_count: None,
+                    parent_session_id: None,
                 })
             },
         ).optional()?;
@@ -545,6 +596,22 @@ impl SessionDB {
                 s.last_message_type = Some(msg_type);
                 s.last_message_preview = Some(preview);
             }
+
+            // Session chain 关系
+            let children_count: i64 = conn.query_row(
+                "SELECT COUNT(DISTINCT child_session_id) FROM session_relations WHERE parent_session_id = ?1",
+                params![&s.session_id],
+                |row| row.get(0),
+            ).unwrap_or(0);
+            if children_count > 0 {
+                s.children_count = Some(children_count);
+            }
+
+            s.parent_session_id = conn.query_row(
+                "SELECT parent_session_id FROM session_relations WHERE child_session_id = ?1 LIMIT 1",
+                params![&s.session_id],
+                |row| row.get(0),
+            ).optional()?;
         }
 
         Ok(session)
