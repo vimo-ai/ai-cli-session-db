@@ -132,12 +132,26 @@ impl<'a> Collector<'a> {
                     file_offset: None, // 全量扫描不使用增量读取
                     file_inode: None,
                     meta: None,
+                    session_type: meta.session_type.clone(),
+                    source: Some(source_str.clone()),
                 };
                 if let Err(e) = self.db.upsert_session_full(&session_input) {
                     result
                         .errors
                         .push(format!("Failed to create session: {}", e));
                     continue;
+                }
+
+                // 写入 session_relations（如果有 parent）
+                if let Some(ref parent_id) = meta.parent_session_id {
+                    if let Err(e) = self.db.insert_session_relation(
+                        parent_id,
+                        &meta.id,
+                        meta.session_type.as_deref().unwrap_or("subagent"),
+                        &source_str,
+                    ) {
+                        tracing::warn!("Failed to insert session relation: {}", e);
+                    }
                 }
 
                 // 获取当前最大 sequence，增量写入时从 max+1 开始
@@ -315,6 +329,8 @@ impl<'a> Collector<'a> {
             last_message_type: None,
             last_message_preview: None,
             last_message_at: None,
+            parent_session_id: None,
+            session_type: None,
         };
 
         // 检查是否支持增量读取
@@ -385,6 +401,9 @@ impl<'a> Collector<'a> {
             }
         };
 
+        // 从路径推断是否为 subagent（路径中包含 /subagents/）
+        let (session_type, parent_session_id) = detect_subagent_from_path(path);
+
         // 创建/更新会话
         let session_input = SessionInput {
             session_id: session_id.clone(),
@@ -398,12 +417,26 @@ impl<'a> Collector<'a> {
             file_offset: new_state.as_ref().map(|s| s.offset as i64),
             file_inode: Some(file_inode),
             meta: None,
+            session_type: Some(session_type.to_string()),
+            source: Some(source_str.clone()),
         };
         if let Err(e) = self.db.upsert_session_full(&session_input) {
             result
                 .errors
                 .push(format!("Failed to create session: {}", e));
             return Ok(result);
+        }
+
+        // 写入 session_relations（如果有 parent）
+        if let Some(ref parent_id) = parent_session_id {
+            if let Err(e) = self.db.insert_session_relation(
+                parent_id,
+                &session_id,
+                "subagent",
+                &source_str,
+            ) {
+                tracing::warn!("Failed to insert session relation: {}", e);
+            }
         }
 
         // 获取当前最大 sequence，增量写入时从 max+1 开始
@@ -505,6 +538,29 @@ fn extract_encoded_dir_name(path: &str) -> Option<String> {
         .and_then(|p| p.file_name())
         .and_then(|s| s.to_str())
         .map(|s| s.to_string())
+}
+
+/// 从文件路径推断是否为 subagent
+///
+/// 路径结构: `.../{parent-uuid}/subagents/{child-uuid}.jsonl`
+/// 返回: (session_type, parent_session_id)
+fn detect_subagent_from_path(path: &str) -> (&str, Option<String>) {
+    let path = Path::new(path);
+    // 检查父目录是否叫 "subagents"
+    if let Some(parent) = path.parent() {
+        if parent.file_name().and_then(|s| s.to_str()) == Some("subagents") {
+            // parent 的 parent 就是主 session 目录
+            if let Some(session_dir) = parent.parent() {
+                if let Some(parent_id) = session_dir.file_name().and_then(|s| s.to_str()) {
+                    // 校验 parent_id 是 UUID 格式，防止项目路径中恰好有 subagents 目录的误判
+                    if uuid::Uuid::parse_str(parent_id).is_ok() {
+                        return ("subagent", Some(parent_id.to_string()));
+                    }
+                }
+            }
+        }
+    }
+    ("main", None)
 }
 
 /// 从路径提取项目名（跨平台）

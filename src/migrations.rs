@@ -132,6 +132,10 @@ fn ensure_sessions_columns(conn: &Connection) -> SqliteResult<()> {
         "INTEGER DEFAULT (strftime('%s','now')*1000)",
     )?;
 
+    // Session Chain Linking 新增列
+    ensure_column(conn, "sessions", "session_type", "TEXT")?;
+    ensure_column(conn, "sessions", "source", "TEXT")?;
+
     Ok(())
 }
 

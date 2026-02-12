@@ -89,6 +89,8 @@ typedef struct Session {
     int64_t project_id;
     int64_t message_count;
     int64_t last_message_at;
+    char *session_type;
+    char *source;
     int64_t created_at;
     int64_t updated_at;
 } Session;
@@ -280,6 +282,25 @@ typedef struct CollectResultC {
      */
     char *first_error;
 } CollectResultC;
+
+/**
+ * SessionRelation C 结构体
+ */
+typedef struct SessionRelationC {
+    char *parent_session_id;
+    char *child_session_id;
+    char *relation_type;
+    char *source;
+    int64_t created_at;
+} SessionRelationC;
+
+/**
+ * C 数组 wrapper
+ */
+typedef struct SessionRelationArray {
+    struct SessionRelationC *data;
+    uintptr_t len;
+} SessionRelationArray;
 
 /**
  * 连接数据库
@@ -721,6 +742,43 @@ enum FfiError session_db_collect_by_path(struct SessionDbHandle *handle,
  * - 同一指针只能释放一次
  */
 void session_db_free_collect_result(struct CollectResultC *result);
+
+/**
+ * 获取子会话关系列表
+ *
+ * # Safety
+ * `handle`, `parent_session_id` 必须有效，返回数组需要用 `session_db_free_session_relations` 释放
+ */
+enum FfiError session_db_get_children_sessions(const struct SessionDbHandle *handle,
+                                               const char *parent_session_id,
+                                               struct SessionRelationArray **out_array);
+
+/**
+ * 获取父会话关系
+ *
+ * # Safety
+ * `handle`, `child_session_id` 必须有效，`out_relation` 可以是 null（表示不存在父关系）
+ * 返回的 relation 需要用 `session_db_free_session_relation` 释放
+ */
+enum FfiError session_db_get_parent_session(const struct SessionDbHandle *handle,
+                                            const char *child_session_id,
+                                            struct SessionRelationC **out_relation);
+
+/**
+ * 释放 SessionRelation 数组
+ *
+ * # Safety
+ * `array` 必须是 `session_db_get_children_sessions` 返回的有效指针
+ */
+void session_db_free_session_relations(struct SessionRelationArray *array);
+
+/**
+ * 释放单个 SessionRelation
+ *
+ * # Safety
+ * `relation` 必须是 `session_db_get_parent_session` 返回的有效指针
+ */
+void session_db_free_session_relation(struct SessionRelationC *relation);
 
 /**
  * 创建 AgentClient 句柄

@@ -69,6 +69,9 @@ pub struct Session {
     pub file_size: Option<i64>,
     // 额外元信息
     pub meta: Option<String>,
+    // 会话分类
+    pub session_type: Option<String>,
+    pub source: Option<String>,
     // 时间戳
     pub created_at: i64,
     pub updated_at: i64,
@@ -181,6 +184,9 @@ pub struct SessionWithProject {
     // 额外元信息
     pub encoded_dir_name: Option<String>,
     pub meta: Option<String>,
+    // 会话分类
+    pub session_type: Option<String>,
+    pub source: Option<String>,
     // 时间戳
     pub created_at: i64,
     pub updated_at: i64,
@@ -200,4 +206,15 @@ pub struct TalkSummary {
     pub summary_l3: Option<String>, // L3 摘要（Session 级别汇总）
     pub created_at: i64,
     pub updated_at: i64,
+}
+
+/// 会话关系（parent→child）
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SessionRelation {
+    pub parent_session_id: String,
+    pub child_session_id: String,
+    pub relation_type: String,
+    pub source: String,
+    pub created_at: i64,
 }

@@ -73,6 +73,17 @@ CREATE TABLE IF NOT EXISTS talks (
     UNIQUE(session_id, talk_id),
     FOREIGN KEY (session_id) REFERENCES sessions(session_id)
 );
+
+-- Session Relations 表（会话间关系：parent→child）
+CREATE TABLE IF NOT EXISTS session_relations (
+    parent_session_id TEXT NOT NULL,
+    child_session_id  TEXT NOT NULL,
+    relation_type     TEXT NOT NULL,  -- subagent / rollout
+    source            TEXT NOT NULL,  -- claude / codex / ...
+    created_at        INTEGER NOT NULL DEFAULT (strftime('%s','now')*1000),
+    PRIMARY KEY (parent_session_id, child_session_id, relation_type),
+    CHECK (parent_session_id <> child_session_id)
+);
 "#;
 
 /// 索引定义 SQL
@@ -91,6 +102,8 @@ CREATE INDEX IF NOT EXISTS idx_messages_approval_status ON messages(approval_sta
 CREATE INDEX IF NOT EXISTS idx_messages_approval_pending ON messages(session_id, approval_status) WHERE approval_status = 'pending';
 CREATE INDEX IF NOT EXISTS idx_talks_session ON talks(session_id);
 CREATE INDEX IF NOT EXISTS idx_talks_talk_id ON talks(talk_id);
+CREATE INDEX IF NOT EXISTS idx_session_relations_parent ON session_relations(parent_session_id);
+CREATE INDEX IF NOT EXISTS idx_session_relations_child ON session_relations(child_session_id);
 "#;
 
 /// FTS5 全文搜索 Schema (索引 content_full)
@@ -202,8 +215,21 @@ CREATE TABLE IF NOT EXISTS talks (
     FOREIGN KEY (session_id) REFERENCES sessions(session_id)
 );
 
+-- Session Relations 表（会话间关系：parent→child）
+CREATE TABLE IF NOT EXISTS session_relations (
+    parent_session_id TEXT NOT NULL,
+    child_session_id  TEXT NOT NULL,
+    relation_type     TEXT NOT NULL,
+    source            TEXT NOT NULL,
+    created_at        INTEGER NOT NULL DEFAULT (strftime('%s','now')*1000),
+    PRIMARY KEY (parent_session_id, child_session_id, relation_type),
+    CHECK (parent_session_id <> child_session_id)
+);
+
 CREATE INDEX IF NOT EXISTS idx_talks_session ON talks(session_id);
 CREATE INDEX IF NOT EXISTS idx_talks_talk_id ON talks(talk_id);
+CREATE INDEX IF NOT EXISTS idx_session_relations_parent ON session_relations(parent_session_id);
+CREATE INDEX IF NOT EXISTS idx_session_relations_child ON session_relations(child_session_id);
 "#;
 
 /// 获取完整 Schema (根据 feature flags)

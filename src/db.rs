@@ -3,7 +3,7 @@
 use crate::config::{ConnectionMode, DbConfig};
 use crate::error::{Error, Result};
 use crate::migrations;
-use crate::types::{Message, Project, ProjectWithStats, Session, SessionWithProject, Stats, TalkSummary};
+use crate::types::{Message, Project, ProjectWithStats, Session, SessionRelation, SessionWithProject, Stats, TalkSummary};
 use ai_cli_session_collector::MessageType;
 use parking_lot::Mutex;
 use rusqlite::{Connection, OptionalExtension, params};
@@ -312,8 +312,8 @@ impl SessionDB {
 
         conn.execute(
             r#"
-            INSERT INTO sessions (session_id, project_id, cwd, model, channel, message_count, file_mtime, file_size, file_offset, file_inode, meta, created_at, updated_at)
-            VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?12)
+            INSERT INTO sessions (session_id, project_id, cwd, model, channel, message_count, file_mtime, file_size, file_offset, file_inode, meta, session_type, source, created_at, updated_at)
+            VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?14)
             ON CONFLICT(session_id) DO UPDATE SET
                 cwd = COALESCE(excluded.cwd, sessions.cwd),
                 model = COALESCE(excluded.model, sessions.model),
@@ -324,6 +324,8 @@ impl SessionDB {
                 file_offset = COALESCE(excluded.file_offset, sessions.file_offset),
                 file_inode = COALESCE(excluded.file_inode, sessions.file_inode),
                 meta = COALESCE(excluded.meta, sessions.meta),
+                session_type = COALESCE(excluded.session_type, sessions.session_type),
+                source = COALESCE(excluded.source, sessions.source),
                 updated_at = excluded.updated_at
             "#,
             params![
@@ -338,6 +340,8 @@ impl SessionDB {
                 input.file_offset,
                 input.file_inode,
                 input.meta,
+                input.session_type,
+                input.source,
                 now,
             ],
         )?;
@@ -352,7 +356,7 @@ impl SessionDB {
             r#"
             SELECT id, session_id, project_id, message_count, last_message_at,
                    cwd, model, channel, file_mtime, file_size, meta,
-                   created_at, updated_at
+                   session_type, source, created_at, updated_at
             FROM sessions
             WHERE project_id = ?1
             ORDER BY updated_at DESC
@@ -372,8 +376,10 @@ impl SessionDB {
                 file_mtime: row.get(8)?,
                 file_size: row.get(9)?,
                 meta: row.get(10)?,
-                created_at: row.get(11)?,
-                updated_at: row.get(12)?,
+                session_type: row.get(11)?,
+                source: row.get(12)?,
+                created_at: row.get(13)?,
+                updated_at: row.get(14)?,
             })
         })?;
 
@@ -394,6 +400,7 @@ impl SessionDB {
             SELECT s.id, s.session_id, s.project_id, p.name, p.path,
                    s.message_count, s.last_message_at,
                    s.cwd, s.model, s.channel, s.file_mtime, s.file_size, s.encoded_dir_name, s.meta,
+                   s.session_type, s.source,
                    s.created_at, s.updated_at
             FROM sessions s
             INNER JOIN projects p ON s.project_id = p.id
@@ -419,8 +426,10 @@ impl SessionDB {
                 file_size: row.get(11)?,
                 encoded_dir_name: row.get(12)?,
                 meta: row.get(13)?,
-                created_at: row.get(14)?,
-                updated_at: row.get(15)?,
+                session_type: row.get(14)?,
+                source: row.get(15)?,
+                created_at: row.get(16)?,
+                updated_at: row.get(17)?,
                 last_message_type: None,
                 last_message_preview: None,
             })
@@ -498,6 +507,7 @@ impl SessionDB {
             SELECT s.id, s.session_id, s.project_id, p.name, p.path,
                    s.message_count, s.last_message_at,
                    s.cwd, s.model, s.channel, s.file_mtime, s.file_size, s.encoded_dir_name, s.meta,
+                   s.session_type, s.source,
                    s.created_at, s.updated_at
             FROM sessions s
             INNER JOIN projects p ON s.project_id = p.id
@@ -520,8 +530,10 @@ impl SessionDB {
                     file_size: row.get(11)?,
                     encoded_dir_name: row.get(12)?,
                     meta: row.get(13)?,
-                    created_at: row.get(14)?,
-                    updated_at: row.get(15)?,
+                    session_type: row.get(14)?,
+                    source: row.get(15)?,
+                    created_at: row.get(16)?,
+                    updated_at: row.get(17)?,
                     last_message_type: None,
                     last_message_preview: None,
                 })
@@ -545,7 +557,7 @@ impl SessionDB {
             r#"
             SELECT id, session_id, project_id, message_count, last_message_at,
                    cwd, model, channel, file_mtime, file_size, meta,
-                   created_at, updated_at
+                   session_type, source, created_at, updated_at
             FROM sessions
             WHERE session_id = ?1
             "#,
@@ -563,8 +575,10 @@ impl SessionDB {
                     file_mtime: row.get(8)?,
                     file_size: row.get(9)?,
                     meta: row.get(10)?,
-                    created_at: row.get(11)?,
-                    updated_at: row.get(12)?,
+                    session_type: row.get(11)?,
+                    source: row.get(12)?,
+                    created_at: row.get(13)?,
+                    updated_at: row.get(14)?,
                 })
             },
         )
@@ -630,7 +644,7 @@ impl SessionDB {
                 r#"
                 SELECT id, session_id, project_id, message_count, last_message_at,
                        cwd, model, channel, file_mtime, file_size, meta,
-                       created_at, updated_at
+                       session_type, source, created_at, updated_at
                 FROM sessions
                 WHERE project_id = ?1
                 ORDER BY updated_at DESC
@@ -646,7 +660,7 @@ impl SessionDB {
                 r#"
                 SELECT id, session_id, project_id, message_count, last_message_at,
                        cwd, model, channel, file_mtime, file_size, meta,
-                       created_at, updated_at
+                       session_type, source, created_at, updated_at
                 FROM sessions
                 ORDER BY updated_at DESC
                 LIMIT ?1
@@ -672,8 +686,10 @@ impl SessionDB {
                 file_mtime: row.get(8)?,
                 file_size: row.get(9)?,
                 meta: row.get(10)?,
-                created_at: row.get(11)?,
-                updated_at: row.get(12)?,
+                session_type: row.get(11)?,
+                source: row.get(12)?,
+                created_at: row.get(13)?,
+                updated_at: row.get(14)?,
             })
         })?;
 
@@ -703,7 +719,7 @@ impl SessionDB {
             r#"
             SELECT id, session_id, project_id, message_count, last_message_at,
                    cwd, model, channel, file_mtime, file_size, meta,
-                   created_at, updated_at
+                   session_type, source, created_at, updated_at
             FROM sessions
             WHERE session_id LIKE ?1
             ORDER BY updated_at DESC
@@ -724,8 +740,10 @@ impl SessionDB {
                 file_mtime: row.get(8)?,
                 file_size: row.get(9)?,
                 meta: row.get(10)?,
-                created_at: row.get(11)?,
-                updated_at: row.get(12)?,
+                session_type: row.get(11)?,
+                source: row.get(12)?,
+                created_at: row.get(13)?,
+                updated_at: row.get(14)?,
             })
         })?;
 
@@ -1695,6 +1713,9 @@ pub struct SessionInput {
     pub file_inode: Option<i64>,
     // 额外元信息
     pub meta: Option<String>,
+    // 会话分类
+    pub session_type: Option<String>,
+    pub source: Option<String>,
 }
 
 /// 消息输入 (写入用)
@@ -1772,6 +1793,78 @@ impl SessionDB {
         } else {
             Ok(IntegrityCheckResult::Corrupted(result))
         }
+    }
+
+    // ==================== Session Relations 操作 ====================
+
+    /// 插入会话关系（幂等，INSERT OR IGNORE）
+    pub fn insert_session_relation(
+        &self,
+        parent_id: &str,
+        child_id: &str,
+        relation_type: &str,
+        source: &str,
+    ) -> Result<()> {
+        let conn = self.conn.lock();
+        conn.execute(
+            r#"
+            INSERT OR IGNORE INTO session_relations (parent_session_id, child_session_id, relation_type, source)
+            VALUES (?1, ?2, ?3, ?4)
+            "#,
+            params![parent_id, child_id, relation_type, source],
+        )?;
+        Ok(())
+    }
+
+    /// 获取子会话列表
+    pub fn get_children_sessions(&self, parent_session_id: &str) -> Result<Vec<SessionRelation>> {
+        let conn = self.conn.lock();
+        let mut stmt = conn.prepare(
+            r#"
+            SELECT parent_session_id, child_session_id, relation_type, source, created_at
+            FROM session_relations
+            WHERE parent_session_id = ?1
+            ORDER BY created_at ASC
+            "#,
+        )?;
+
+        let rows = stmt.query_map(params![parent_session_id], |row| {
+            Ok(SessionRelation {
+                parent_session_id: row.get(0)?,
+                child_session_id: row.get(1)?,
+                relation_type: row.get(2)?,
+                source: row.get(3)?,
+                created_at: row.get(4)?,
+            })
+        })?;
+
+        rows.collect::<std::result::Result<Vec<_>, _>>()
+            .map_err(Into::into)
+    }
+
+    /// 获取父会话
+    pub fn get_parent_session(&self, child_session_id: &str) -> Result<Option<SessionRelation>> {
+        let conn = self.conn.lock();
+        conn.query_row(
+            r#"
+            SELECT parent_session_id, child_session_id, relation_type, source, created_at
+            FROM session_relations
+            WHERE child_session_id = ?1
+            LIMIT 1
+            "#,
+            params![child_session_id],
+            |row| {
+                Ok(SessionRelation {
+                    parent_session_id: row.get(0)?,
+                    child_session_id: row.get(1)?,
+                    relation_type: row.get(2)?,
+                    source: row.get(3)?,
+                    created_at: row.get(4)?,
+                })
+            },
+        )
+        .optional()
+        .map_err(Into::into)
     }
 }
 

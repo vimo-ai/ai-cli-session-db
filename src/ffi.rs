@@ -328,6 +328,8 @@ pub struct Session {
     pub project_id: i64,
     pub message_count: i64,
     pub last_message_at: i64, // -1 表示 NULL
+    pub session_type: *mut c_char, // NULL 表示未分类
+    pub source: *mut c_char,       // NULL 表示未知来源
     pub created_at: i64,
     pub updated_at: i64,
 }
@@ -370,12 +372,25 @@ pub unsafe extern "C" fn session_db_list_sessions(
                     Err(_) => return FfiError::InvalidUtf8,
                 };
 
+                let session_type = s
+                    .session_type
+                    .and_then(|t| CString::new(t).ok())
+                    .map(|c| c.into_raw())
+                    .unwrap_or(std::ptr::null_mut());
+                let source = s
+                    .source
+                    .and_then(|t| CString::new(t).ok())
+                    .map(|c| c.into_raw())
+                    .unwrap_or(std::ptr::null_mut());
+
                 c_sessions.push(Session {
                     id: s.id,
                     session_id,
                     project_id: s.project_id,
                     message_count: s.message_count,
                     last_message_at: s.last_message_at.unwrap_or(-1),
+                    session_type,
+                    source,
                     created_at: s.created_at,
                     updated_at: s.updated_at,
                 });
@@ -409,6 +424,12 @@ pub unsafe extern "C" fn session_db_free_sessions(array: *mut SessionArray) {
     for s in sessions {
         if !s.session_id.is_null() {
             drop(CString::from_raw(s.session_id));
+        }
+        if !s.session_type.is_null() {
+            drop(CString::from_raw(s.session_type));
+        }
+        if !s.source.is_null() {
+            drop(CString::from_raw(s.source));
         }
     }
 }
@@ -2266,6 +2287,8 @@ pub unsafe extern "C" fn session_db_read_session_messages(
             last_message_type: None,
             last_message_preview: None,
             last_message_at: None,
+            parent_session_id: None,
+            session_type: None,
         };
 
         // 使用默认路径创建 adapter（跨平台）
@@ -2532,5 +2555,185 @@ pub unsafe extern "C" fn session_db_free_collect_result(result: *mut CollectResu
     let r = Box::from_raw(result);
     if !r.first_error.is_null() {
         drop(CString::from_raw(r.first_error));
+    }
+}
+
+// ==================== Session Relations ====================
+
+/// SessionRelation C 结构体
+#[repr(C)]
+pub struct SessionRelationC {
+    pub parent_session_id: *mut c_char,
+    pub child_session_id: *mut c_char,
+    pub relation_type: *mut c_char,
+    pub source: *mut c_char,
+    pub created_at: i64,
+}
+
+/// C 数组 wrapper
+#[repr(C)]
+pub struct SessionRelationArray {
+    pub data: *mut SessionRelationC,
+    pub len: usize,
+}
+
+/// 将 Rust SessionRelation 转为 C 结构体
+fn relation_to_c(r: &crate::types::SessionRelation) -> Option<SessionRelationC> {
+    let parent_session_id = CString::new(r.parent_session_id.clone()).ok()?.into_raw();
+    let child_session_id = CString::new(r.child_session_id.clone()).ok()?.into_raw();
+    let relation_type = CString::new(r.relation_type.clone()).ok()?.into_raw();
+    let source = CString::new(r.source.clone()).ok()?.into_raw();
+    Some(SessionRelationC {
+        parent_session_id,
+        child_session_id,
+        relation_type,
+        source,
+        created_at: r.created_at,
+    })
+}
+
+/// 获取子会话关系列表
+///
+/// # Safety
+/// `handle`, `parent_session_id` 必须有效，返回数组需要用 `session_db_free_session_relations` 释放
+#[no_mangle]
+pub unsafe extern "C" fn session_db_get_children_sessions(
+    handle: *const SessionDbHandle,
+    parent_session_id: *const c_char,
+    out_array: *mut *mut SessionRelationArray,
+) -> FfiError {
+    if handle.is_null() || parent_session_id.is_null() || out_array.is_null() {
+        return FfiError::NullPointer;
+    }
+
+    let result = panic::catch_unwind(AssertUnwindSafe(|| {
+        let handle = &*handle;
+        let parent_id = match CStr::from_ptr(parent_session_id).to_str() {
+            Ok(s) => s,
+            Err(_) => return Err(FfiError::InvalidUtf8),
+        };
+        match handle.db.get_children_sessions(parent_id) {
+            Ok(relations) => Ok(relations),
+            Err(_) => Err(FfiError::DatabaseError),
+        }
+    }));
+
+    match result {
+        Ok(Ok(relations)) => {
+            let mut c_relations: Vec<SessionRelationC> = Vec::new();
+            for r in &relations {
+                match relation_to_c(r) {
+                    Some(c) => c_relations.push(c),
+                    None => return FfiError::InvalidUtf8,
+                }
+            }
+
+            let len = c_relations.len();
+            let data = c_relations.as_mut_ptr();
+            std::mem::forget(c_relations);
+
+            let array = Box::new(SessionRelationArray { data, len });
+            *out_array = Box::into_raw(array);
+            FfiError::Success
+        }
+        Ok(Err(e)) => e,
+        Err(_) => FfiError::Unknown,
+    }
+}
+
+/// 获取父会话关系
+///
+/// # Safety
+/// `handle`, `child_session_id` 必须有效，`out_relation` 可以是 null（表示不存在父关系）
+/// 返回的 relation 需要用 `session_db_free_session_relation` 释放
+#[no_mangle]
+pub unsafe extern "C" fn session_db_get_parent_session(
+    handle: *const SessionDbHandle,
+    child_session_id: *const c_char,
+    out_relation: *mut *mut SessionRelationC,
+) -> FfiError {
+    if handle.is_null() || child_session_id.is_null() || out_relation.is_null() {
+        return FfiError::NullPointer;
+    }
+
+    let result = panic::catch_unwind(AssertUnwindSafe(|| {
+        let handle = &*handle;
+        let child_id = match CStr::from_ptr(child_session_id).to_str() {
+            Ok(s) => s,
+            Err(_) => return Err(FfiError::InvalidUtf8),
+        };
+        match handle.db.get_parent_session(child_id) {
+            Ok(relation) => Ok(relation),
+            Err(_) => Err(FfiError::DatabaseError),
+        }
+    }));
+
+    match result {
+        Ok(Ok(Some(relation))) => match relation_to_c(&relation) {
+            Some(c) => {
+                *out_relation = Box::into_raw(Box::new(c));
+                FfiError::Success
+            }
+            None => FfiError::InvalidUtf8,
+        },
+        Ok(Ok(None)) => {
+            *out_relation = std::ptr::null_mut();
+            FfiError::Success
+        }
+        Ok(Err(e)) => e,
+        Err(_) => FfiError::Unknown,
+    }
+}
+
+/// 释放 SessionRelation 数组
+///
+/// # Safety
+/// `array` 必须是 `session_db_get_children_sessions` 返回的有效指针
+#[no_mangle]
+pub unsafe extern "C" fn session_db_free_session_relations(array: *mut SessionRelationArray) {
+    if array.is_null() {
+        return;
+    }
+
+    let array = Box::from_raw(array);
+    let relations = Vec::from_raw_parts(array.data, array.len, array.len);
+    for r in relations {
+        if !r.parent_session_id.is_null() {
+            drop(CString::from_raw(r.parent_session_id));
+        }
+        if !r.child_session_id.is_null() {
+            drop(CString::from_raw(r.child_session_id));
+        }
+        if !r.relation_type.is_null() {
+            drop(CString::from_raw(r.relation_type));
+        }
+        if !r.source.is_null() {
+            drop(CString::from_raw(r.source));
+        }
+    }
+}
+
+/// 释放单个 SessionRelation
+///
+/// # Safety
+/// `relation` 必须是 `session_db_get_parent_session` 返回的有效指针
+#[no_mangle]
+pub unsafe extern "C" fn session_db_free_session_relation(relation: *mut SessionRelationC) {
+    if relation.is_null() {
+        return;
+    }
+
+    let r = Box::from_raw(relation);
+    if !r.parent_session_id.is_null() {
+        drop(CString::from_raw(r.parent_session_id));
+    }
+    if !r.child_session_id.is_null() {
+        drop(CString::from_raw(r.child_session_id));
+    }
+    if !r.relation_type.is_null() {
+        drop(CString::from_raw(r.relation_type));
+    }
+    if !r.source.is_null() {
+        drop(CString::from_raw(r.source));
     }
 }
