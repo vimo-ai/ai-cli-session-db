@@ -196,6 +196,7 @@ pub struct SessionWithProject {
     // Session Chain 关系（V6）
     pub children_count: Option<i64>,
     pub parent_session_id: Option<String>,
+    pub child_session_ids: Option<Vec<String>>,
 }
 
 /// Talk 摘要 (Compact 结果)

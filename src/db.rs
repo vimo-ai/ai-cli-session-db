@@ -434,6 +434,7 @@ impl SessionDB {
                 last_message_preview: None,
                 children_count: None,
                 parent_session_id: None,
+                child_session_ids: None,
             })
         })?.collect::<std::result::Result<Vec<_>, _>>()?;
 
@@ -446,23 +447,23 @@ impl SessionDB {
                 }
             }
 
-            // 批量查询 children counts
+            // 批量查询 children IDs（同时得到 count）
             let session_ids: Vec<&str> = sessions.iter().map(|s| s.session_id.as_str()).collect();
             let placeholders: String = (0..session_ids.len()).map(|i| format!("?{}", i + 1)).collect::<Vec<_>>().join(",");
 
             let sql = format!(
-                "SELECT parent_session_id, COUNT(DISTINCT child_session_id) FROM session_relations WHERE parent_session_id IN ({}) GROUP BY parent_session_id",
+                "SELECT parent_session_id, child_session_id FROM session_relations WHERE parent_session_id IN ({}) ORDER BY created_at ASC",
                 placeholders
             );
             let mut stmt = conn.prepare(&sql)?;
             let params: Vec<&dyn rusqlite::ToSql> = session_ids.iter().map(|id| id as &dyn rusqlite::ToSql).collect();
-            let mut children_map: std::collections::HashMap<String, i64> = std::collections::HashMap::new();
+            let mut children_map: std::collections::HashMap<String, Vec<String>> = std::collections::HashMap::new();
             {
                 let mut rows = stmt.query(params.as_slice())?;
                 while let Some(row) = rows.next()? {
                     let pid: String = row.get(0)?;
-                    let count: i64 = row.get(1)?;
-                    children_map.insert(pid, count);
+                    let cid: String = row.get(1)?;
+                    children_map.entry(pid).or_default().push(cid);
                 }
             }
 
@@ -483,8 +484,9 @@ impl SessionDB {
             }
 
             for session in &mut sessions {
-                if let Some(&count) = children_map.get(&session.session_id) {
-                    session.children_count = Some(count);
+                if let Some(child_ids) = children_map.remove(&session.session_id) {
+                    session.children_count = Some(child_ids.len() as i64);
+                    session.child_session_ids = Some(child_ids);
                 }
                 if let Some(parent_id) = parent_map.get(&session.session_id) {
                     session.parent_session_id = Some(parent_id.clone());
@@ -587,6 +589,7 @@ impl SessionDB {
                     last_message_preview: None,
                     children_count: None,
                     parent_session_id: None,
+                    child_session_ids: None,
                 })
             },
         ).optional()?;
@@ -598,13 +601,16 @@ impl SessionDB {
             }
 
             // Session chain 关系
-            let children_count: i64 = conn.query_row(
-                "SELECT COUNT(DISTINCT child_session_id) FROM session_relations WHERE parent_session_id = ?1",
-                params![&s.session_id],
-                |row| row.get(0),
-            ).unwrap_or(0);
-            if children_count > 0 {
-                s.children_count = Some(children_count);
+            let children: Vec<String> = {
+                let mut stmt = conn.prepare(
+                    "SELECT DISTINCT child_session_id FROM session_relations WHERE parent_session_id = ?1 ORDER BY created_at ASC"
+                )?;
+                let rows = stmt.query_map(params![&s.session_id], |row| row.get(0))?;
+                rows.collect::<std::result::Result<Vec<_>, _>>()?
+            };
+            if !children.is_empty() {
+                s.children_count = Some(children.len() as i64);
+                s.child_session_ids = Some(children);
             }
 
             s.parent_session_id = conn.query_row(
