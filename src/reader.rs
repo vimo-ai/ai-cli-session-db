@@ -587,6 +587,7 @@ impl SessionReader {
             last_message_at: None,
             parent_session_id: None,
             session_type: None,
+            continuation_from: None,
         };
 
         let result = self.adapter.parse_session(&meta).ok()??;

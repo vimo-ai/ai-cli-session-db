@@ -3,7 +3,7 @@
 use crate::config::{ConnectionMode, DbConfig};
 use crate::error::{Error, Result};
 use crate::migrations;
-use crate::types::{Message, Project, ProjectWithStats, Session, SessionRelation, SessionWithProject, Stats, TalkSummary};
+use crate::types::{ChainNode, ContinuationChain, Message, Project, ProjectWithStats, Session, SessionRelation, SessionWithProject, Stats, TalkSummary};
 use ai_cli_session_collector::MessageType;
 use parking_lot::Mutex;
 use rusqlite::{Connection, OptionalExtension, params};
@@ -435,6 +435,8 @@ impl SessionDB {
                 children_count: None,
                 parent_session_id: None,
                 child_session_ids: None,
+                continuation_prev_id: None,
+                continuation_next_ids: None,
             })
         })?.collect::<std::result::Result<Vec<_>, _>>()?;
 
@@ -483,6 +485,37 @@ impl SessionDB {
                 }
             }
 
+            // 批量查询 continuation chain 导航
+            let sql_prev = format!(
+                "SELECT session_id, prev_session_id FROM continuation_chain_nodes WHERE session_id IN ({}) AND prev_session_id IS NOT NULL",
+                placeholders
+            );
+            let mut stmt_prev = conn.prepare(&sql_prev)?;
+            let mut continuation_prev_map: std::collections::HashMap<String, String> = std::collections::HashMap::new();
+            {
+                let mut rows = stmt_prev.query(params.as_slice())?;
+                while let Some(row) = rows.next()? {
+                    let sid: String = row.get(0)?;
+                    let prev: String = row.get(1)?;
+                    continuation_prev_map.insert(sid, prev);
+                }
+            }
+
+            let sql_next = format!(
+                "SELECT prev_session_id, session_id FROM continuation_chain_nodes WHERE prev_session_id IN ({}) ORDER BY created_at ASC",
+                placeholders
+            );
+            let mut stmt_next = conn.prepare(&sql_next)?;
+            let mut continuation_next_map: std::collections::HashMap<String, Vec<String>> = std::collections::HashMap::new();
+            {
+                let mut rows = stmt_next.query(params.as_slice())?;
+                while let Some(row) = rows.next()? {
+                    let prev: String = row.get(0)?;
+                    let sid: String = row.get(1)?;
+                    continuation_next_map.entry(prev).or_default().push(sid);
+                }
+            }
+
             for session in &mut sessions {
                 if let Some(child_ids) = children_map.remove(&session.session_id) {
                     session.children_count = Some(child_ids.len() as i64);
@@ -490,6 +523,12 @@ impl SessionDB {
                 }
                 if let Some(parent_id) = parent_map.get(&session.session_id) {
                     session.parent_session_id = Some(parent_id.clone());
+                }
+                if let Some(prev_id) = continuation_prev_map.remove(&session.session_id) {
+                    session.continuation_prev_id = Some(prev_id);
+                }
+                if let Some(next_ids) = continuation_next_map.remove(&session.session_id) {
+                    session.continuation_next_ids = Some(next_ids);
                 }
             }
         }
@@ -590,6 +629,8 @@ impl SessionDB {
                     children_count: None,
                     parent_session_id: None,
                     child_session_ids: None,
+                    continuation_prev_id: None,
+                    continuation_next_ids: None,
                 })
             },
         ).optional()?;
@@ -618,6 +659,27 @@ impl SessionDB {
                 params![&s.session_id],
                 |row| row.get(0),
             ).optional()?;
+
+            // Continuation chain 导航
+            s.continuation_prev_id = conn
+                .query_row(
+                    "SELECT prev_session_id FROM continuation_chain_nodes WHERE session_id = ?1",
+                    params![&s.session_id],
+                    |row| row.get(0),
+                )
+                .optional()?
+                .flatten();
+
+            let next_ids: Vec<String> = {
+                let mut stmt = conn.prepare(
+                    "SELECT session_id FROM continuation_chain_nodes WHERE prev_session_id = ?1 ORDER BY created_at ASC",
+                )?;
+                let rows = stmt.query_map(params![&s.session_id], |row| row.get(0))?;
+                rows.collect::<std::result::Result<Vec<_>, _>>()?
+            };
+            if !next_ids.is_empty() {
+                s.continuation_next_ids = Some(next_ids);
+            }
         }
 
         Ok(session)
@@ -1938,6 +2000,113 @@ impl SessionDB {
         )
         .optional()
         .map_err(Into::into)
+    }
+
+    // ==================== Continuation Chain 操作 ====================
+
+    /// 将 session 加入 continuation chain
+    ///
+    /// 逻辑：
+    /// 1. 查 prev_session_id 是否已在某条 chain 中
+    /// 2. 如果在：继承 chain_id，depth = prev.depth + 1
+    /// 3. 如果不在：创建新 chain（chain_id = prev），prev 作为 root (depth=0)，当前 session 为 depth=1
+    /// 4. 当前 session 已存在则跳过（幂等）
+    pub fn insert_continuation(&self, session_id: &str, prev_session_id: &str) -> Result<()> {
+        let conn = self.conn.lock();
+
+        // 当前 session 已在链中则跳过
+        let exists: bool = conn
+            .query_row(
+                "SELECT COUNT(*) > 0 FROM continuation_chain_nodes WHERE session_id = ?1",
+                params![session_id],
+                |row| row.get(0),
+            )
+            .unwrap_or(false);
+        if exists {
+            return Ok(());
+        }
+
+        // 查 prev 所在的 chain
+        let prev_node: Option<(String, i32)> = conn
+            .query_row(
+                "SELECT chain_id, depth FROM continuation_chain_nodes WHERE session_id = ?1",
+                params![prev_session_id],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .optional()?;
+
+        let (chain_id, depth) = match prev_node {
+            Some((cid, d)) => (cid, d + 1),
+            None => {
+                // prev 不在任何 chain → 创建新 chain，prev 作为 root
+                let chain_id = prev_session_id.to_string();
+                conn.execute(
+                    "INSERT OR IGNORE INTO continuation_chains (chain_id, root_session_id) VALUES (?1, ?2)",
+                    params![&chain_id, prev_session_id],
+                )?;
+                conn.execute(
+                    "INSERT OR IGNORE INTO continuation_chain_nodes (session_id, chain_id, prev_session_id, depth) VALUES (?1, ?2, NULL, 0)",
+                    params![prev_session_id, &chain_id],
+                )?;
+                (chain_id, 1)
+            }
+        };
+
+        // 插入当前 session 节点
+        conn.execute(
+            "INSERT OR IGNORE INTO continuation_chain_nodes (session_id, chain_id, prev_session_id, depth) VALUES (?1, ?2, ?3, ?4)",
+            params![session_id, &chain_id, prev_session_id, depth],
+        )?;
+
+        Ok(())
+    }
+
+    /// 获取 session 所在的 continuation chain
+    pub fn get_continuation_chain(&self, session_id: &str) -> Result<Option<ContinuationChain>> {
+        let conn = self.conn.lock();
+
+        // 找到 session 所属的 chain_id
+        let chain_id: Option<String> = conn
+            .query_row(
+                "SELECT chain_id FROM continuation_chain_nodes WHERE session_id = ?1",
+                params![session_id],
+                |row| row.get(0),
+            )
+            .optional()?;
+
+        let Some(chain_id) = chain_id else {
+            return Ok(None);
+        };
+
+        // 读取 chain 元信息
+        let (root_session_id, created_at): (String, i64) = conn.query_row(
+            "SELECT root_session_id, created_at FROM continuation_chains WHERE chain_id = ?1",
+            params![&chain_id],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )?;
+
+        // 读取所有节点
+        let mut stmt = conn.prepare(
+            "SELECT session_id, chain_id, prev_session_id, depth, created_at FROM continuation_chain_nodes WHERE chain_id = ?1 ORDER BY depth, created_at",
+        )?;
+        let nodes = stmt
+            .query_map(params![&chain_id], |row| {
+                Ok(ChainNode {
+                    session_id: row.get(0)?,
+                    chain_id: row.get(1)?,
+                    prev_session_id: row.get(2)?,
+                    depth: row.get(3)?,
+                    created_at: row.get(4)?,
+                })
+            })?
+            .collect::<std::result::Result<Vec<_>, _>>()?;
+
+        Ok(Some(ContinuationChain {
+            chain_id,
+            root_session_id,
+            nodes,
+            created_at,
+        }))
     }
 }
 

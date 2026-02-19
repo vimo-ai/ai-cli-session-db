@@ -142,7 +142,7 @@ impl<'a> Collector<'a> {
                     continue;
                 }
 
-                // 写入 session_relations（如果有 parent）
+                // 写入 session_relations（如果有 parent，即 subagent）
                 if let Some(ref parent_id) = meta.parent_session_id {
                     if let Err(e) = self.db.insert_session_relation(
                         parent_id,
@@ -151,6 +151,13 @@ impl<'a> Collector<'a> {
                         &source_str,
                     ) {
                         tracing::warn!("Failed to insert session relation: {}", e);
+                    }
+                }
+
+                // 写入 continuation chain（如果有 continuation_from）
+                if let Some(ref prev_id) = meta.continuation_from {
+                    if let Err(e) = self.db.insert_continuation(&meta.id, prev_id) {
+                        tracing::warn!("Failed to insert continuation: {}", e);
                     }
                 }
 
@@ -331,6 +338,7 @@ impl<'a> Collector<'a> {
             last_message_at: None,
             parent_session_id: None,
             session_type: None,
+            continuation_from: None,
         };
 
         // 检查是否支持增量读取
@@ -436,6 +444,17 @@ impl<'a> Collector<'a> {
                 &source_str,
             ) {
                 tracing::warn!("Failed to insert session relation: {}", e);
+            }
+        }
+
+        // 写入 continuation chain（Claude 源，检测 JSONL marker）
+        if source == crate::Source::Claude {
+            if let Some(prev_id) =
+                crate::ClaudeAdapter::read_continuation_from_jsonl(file_path)
+            {
+                if let Err(e) = self.db.insert_continuation(&session_id, &prev_id) {
+                    tracing::warn!("Failed to insert continuation: {}", e);
+                }
             }
         }
 

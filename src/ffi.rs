@@ -2289,6 +2289,7 @@ pub unsafe extern "C" fn session_db_read_session_messages(
             last_message_at: None,
             parent_session_id: None,
             session_type: None,
+            continuation_from: None,
         };
 
         // 使用默认路径创建 adapter（跨平台）

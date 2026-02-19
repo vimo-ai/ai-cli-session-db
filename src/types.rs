@@ -197,6 +197,9 @@ pub struct SessionWithProject {
     pub children_count: Option<i64>,
     pub parent_session_id: Option<String>,
     pub child_session_ids: Option<Vec<String>>,
+    // Continuation chain 导航（V7）
+    pub continuation_prev_id: Option<String>,
+    pub continuation_next_ids: Option<Vec<String>>,
 }
 
 /// Talk 摘要 (Compact 结果)
@@ -220,5 +223,26 @@ pub struct SessionRelation {
     pub child_session_id: String,
     pub relation_type: String,
     pub source: String,
+    pub created_at: i64,
+}
+
+/// Continuation Chain（/continue 产生的会话接续链）
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ContinuationChain {
+    pub chain_id: String,
+    pub root_session_id: String,
+    pub nodes: Vec<ChainNode>,
+    pub created_at: i64,
+}
+
+/// Chain 中的单个节点
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ChainNode {
+    pub session_id: String,
+    pub chain_id: String,
+    pub prev_session_id: Option<String>,
+    pub depth: i32,
     pub created_at: i64,
 }

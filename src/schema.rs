@@ -84,6 +84,22 @@ CREATE TABLE IF NOT EXISTS session_relations (
     PRIMARY KEY (parent_session_id, child_session_id, relation_type),
     CHECK (parent_session_id <> child_session_id)
 );
+
+-- Continuation Chains 表（/continue 产生的会话接续链）
+CREATE TABLE IF NOT EXISTS continuation_chains (
+    chain_id          TEXT PRIMARY KEY,                                    -- = root session ID
+    root_session_id   TEXT NOT NULL UNIQUE,                               -- 链头 session
+    created_at        INTEGER NOT NULL DEFAULT (strftime('%s','now')*1000)
+);
+
+-- Continuation Chain Nodes 表（链中的每个节点）
+CREATE TABLE IF NOT EXISTS continuation_chain_nodes (
+    session_id        TEXT PRIMARY KEY,                                    -- 一个 session 最多属于一条链
+    chain_id          TEXT NOT NULL REFERENCES continuation_chains(chain_id),
+    prev_session_id   TEXT,                                               -- NULL = root 节点
+    depth             INTEGER NOT NULL DEFAULT 0,                         -- 离 root 的距离
+    created_at        INTEGER NOT NULL DEFAULT (strftime('%s','now')*1000)
+);
 "#;
 
 /// 索引定义 SQL
@@ -104,6 +120,8 @@ CREATE INDEX IF NOT EXISTS idx_talks_session ON talks(session_id);
 CREATE INDEX IF NOT EXISTS idx_talks_talk_id ON talks(talk_id);
 CREATE INDEX IF NOT EXISTS idx_session_relations_parent ON session_relations(parent_session_id);
 CREATE INDEX IF NOT EXISTS idx_session_relations_child ON session_relations(child_session_id);
+CREATE INDEX IF NOT EXISTS idx_ccn_chain ON continuation_chain_nodes(chain_id, depth);
+CREATE INDEX IF NOT EXISTS idx_ccn_prev ON continuation_chain_nodes(prev_session_id);
 "#;
 
 /// FTS5 全文搜索 Schema (索引 content_full)
@@ -226,10 +244,28 @@ CREATE TABLE IF NOT EXISTS session_relations (
     CHECK (parent_session_id <> child_session_id)
 );
 
+-- Continuation Chains 表（/continue 产生的会话接续链）
+CREATE TABLE IF NOT EXISTS continuation_chains (
+    chain_id          TEXT PRIMARY KEY,
+    root_session_id   TEXT NOT NULL UNIQUE,
+    created_at        INTEGER NOT NULL DEFAULT (strftime('%s','now')*1000)
+);
+
+-- Continuation Chain Nodes 表（链中的每个节点）
+CREATE TABLE IF NOT EXISTS continuation_chain_nodes (
+    session_id        TEXT PRIMARY KEY,
+    chain_id          TEXT NOT NULL REFERENCES continuation_chains(chain_id),
+    prev_session_id   TEXT,
+    depth             INTEGER NOT NULL DEFAULT 0,
+    created_at        INTEGER NOT NULL DEFAULT (strftime('%s','now')*1000)
+);
+
 CREATE INDEX IF NOT EXISTS idx_talks_session ON talks(session_id);
 CREATE INDEX IF NOT EXISTS idx_talks_talk_id ON talks(talk_id);
 CREATE INDEX IF NOT EXISTS idx_session_relations_parent ON session_relations(parent_session_id);
 CREATE INDEX IF NOT EXISTS idx_session_relations_child ON session_relations(child_session_id);
+CREATE INDEX IF NOT EXISTS idx_ccn_chain ON continuation_chain_nodes(chain_id, depth);
+CREATE INDEX IF NOT EXISTS idx_ccn_prev ON continuation_chain_nodes(prev_session_id);
 "#;
 
 /// 获取完整 Schema (根据 feature flags)
