@@ -832,13 +832,25 @@ impl SessionDB {
             .map_err(Into::into)
     }
 
-    /// 通过前缀解析完整会话 ID
+    /// 通过前缀解析完整会话 ID（前缀无匹配时回退到后缀匹配）
     pub fn resolve_session_id(&self, prefix: &str) -> Result<Option<String>> {
         let conn = self.conn.lock();
         let pattern = format!("{}%", prefix);
+        let result = conn
+            .query_row(
+                "SELECT session_id FROM sessions WHERE session_id LIKE ?1 LIMIT 1",
+                params![pattern],
+                |row| row.get(0),
+            )
+            .optional()?;
+        if result.is_some() {
+            return Ok(result);
+        }
+        // 回退：后缀匹配（处理 Codex rollout-{ts}-{uuid} 场景，用户传纯 UUID）
+        let suffix_pattern = format!("%{}", prefix);
         conn.query_row(
             "SELECT session_id FROM sessions WHERE session_id LIKE ?1 LIMIT 1",
-            params![pattern],
+            params![suffix_pattern],
             |row| row.get(0),
         )
         .optional()
