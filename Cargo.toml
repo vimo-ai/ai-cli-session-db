@@ -18,6 +18,7 @@ fts = []              # FTS5 支持
 ffi = []              # C FFI 导出 (Swift 绑定用)
 agent = ["writer", "search", "dep:notify", "dep:notify-debouncer-mini"]  # Agent 模式（唯一 Writer + 文件监听 + 事件推送）
 client = []           # Agent Client（供组件使用）
+sync = ["dep:aho-corasick", "dep:globset", "dep:reqwest", "dep:shellexpand"]  # 同步模块（push to server）
 
 [dependencies]
 # 数据库
@@ -53,6 +54,12 @@ native-tls = "0.2"
 interprocess = { version = "2.2", features = ["tokio"] }  # IPC: Unix Socket / Named Pipe
 sysinfo = "0.32"                                           # 进程检测
 file-id = "0.2"                                            # 文件标识 (inode/file_index)
+
+# 同步模块（可选）
+aho-corasick = { version = "1", optional = true }          # 敏感词多模式匹配
+globset = { version = "0.4", optional = true }             # 项目白名单 glob
+reqwest = { version = "0.12", features = ["json", "gzip", "rustls-tls"], default-features = false, optional = true }  # HTTP client
+shellexpand = { version = "3", optional = true }           # ~ 路径展开
 
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"

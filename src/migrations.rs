@@ -29,6 +29,7 @@ pub fn ensure_schema(conn: &Connection) -> SqliteResult<()> {
 
     // 2. 补充可能缺失的列（幂等）
     // 注意：必须在创建索引之前，因为索引可能依赖这些列
+    ensure_projects_columns(conn)?;
     ensure_sessions_columns(conn)?;
     ensure_messages_columns(conn)?;
     info!("列结构已确保");
@@ -102,6 +103,12 @@ fn ensure_column(conn: &Connection, table: &str, column: &str, definition: &str)
         info!("补充列: {}.{}", table, column);
     }
 
+    Ok(())
+}
+
+/// 确保 projects 表的所有列存在
+fn ensure_projects_columns(conn: &Connection) -> SqliteResult<()> {
+    ensure_column(conn, "projects", "repo_url", "TEXT")?;
     Ok(())
 }
 

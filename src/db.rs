@@ -183,7 +183,7 @@ impl SessionDB {
     pub fn list_projects(&self) -> Result<Vec<Project>> {
         let conn = self.conn.lock();
         let mut stmt = conn.prepare(
-            "SELECT id, name, path, source, encoded_dir_name, created_at, updated_at FROM projects ORDER BY updated_at DESC",
+            "SELECT id, name, path, source, encoded_dir_name, repo_url, created_at, updated_at FROM projects ORDER BY updated_at DESC",
         )?;
 
         let rows = stmt.query_map([], |row| {
@@ -193,8 +193,9 @@ impl SessionDB {
                 path: row.get(2)?,
                 source: row.get(3)?,
                 encoded_dir_name: row.get(4)?,
-                created_at: row.get(5)?,
-                updated_at: row.get(6)?,
+                repo_url: row.get(5)?,
+                created_at: row.get(6)?,
+                updated_at: row.get(7)?,
             })
         })?;
 
@@ -245,7 +246,7 @@ impl SessionDB {
     pub fn get_project(&self, id: i64) -> Result<Option<Project>> {
         let conn = self.conn.lock();
         conn.query_row(
-            "SELECT id, name, path, source, encoded_dir_name, created_at, updated_at FROM projects WHERE id = ?1",
+            "SELECT id, name, path, source, encoded_dir_name, repo_url, created_at, updated_at FROM projects WHERE id = ?1",
             params![id],
             |row| {
                 Ok(Project {
@@ -254,8 +255,9 @@ impl SessionDB {
                     path: row.get(2)?,
                     source: row.get(3)?,
                     encoded_dir_name: row.get(4)?,
-                    created_at: row.get(5)?,
-                    updated_at: row.get(6)?,
+                    repo_url: row.get(5)?,
+                    created_at: row.get(6)?,
+                    updated_at: row.get(7)?,
                 })
             },
         )
@@ -267,7 +269,7 @@ impl SessionDB {
     pub fn get_project_by_path(&self, path: &str) -> Result<Option<Project>> {
         let conn = self.conn.lock();
         conn.query_row(
-            "SELECT id, name, path, source, encoded_dir_name, created_at, updated_at FROM projects WHERE path = ?1",
+            "SELECT id, name, path, source, encoded_dir_name, repo_url, created_at, updated_at FROM projects WHERE path = ?1",
             params![path],
             |row| {
                 Ok(Project {
@@ -276,8 +278,9 @@ impl SessionDB {
                     path: row.get(2)?,
                     source: row.get(3)?,
                     encoded_dir_name: row.get(4)?,
-                    created_at: row.get(5)?,
-                    updated_at: row.get(6)?,
+                    repo_url: row.get(5)?,
+                    created_at: row.get(6)?,
+                    updated_at: row.get(7)?,
                 })
             },
         )

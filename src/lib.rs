@@ -54,6 +54,9 @@ pub mod agent;
 #[cfg(feature = "client")]
 pub mod client;
 
+#[cfg(feature = "sync")]
+pub mod sync;
+
 // Re-exports
 pub use config::DbConfig;
 pub use db::{IntegrityCheckResult, MessageInput, ProjectWithSource, SessionDB, SessionInput};

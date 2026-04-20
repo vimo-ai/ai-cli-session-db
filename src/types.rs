@@ -48,6 +48,7 @@ pub struct Project {
     pub path: String,
     pub source: String,
     pub encoded_dir_name: Option<String>,
+    pub repo_url: Option<String>,
     pub created_at: i64,
     pub updated_at: i64,
 }

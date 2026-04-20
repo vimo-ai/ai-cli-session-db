@@ -56,6 +56,11 @@ if [ ! -f "$DYLIB" ]; then
     exit 1
 fi
 
+# 修正 install name（cargo 产出的是绝对路径，换机器/目录就会挂）
+install_name_tool -id \
+    "@loader_path/../Libs/libai_cli_session_db.dylib" \
+    "$DYLIB"
+
 log_success "Built: $DYLIB"
 
 # 部署

@@ -9,6 +9,7 @@ CREATE TABLE IF NOT EXISTS projects (
     name TEXT NOT NULL,
     source TEXT NOT NULL DEFAULT 'claude',
     encoded_dir_name TEXT,
+    repo_url TEXT,             -- git remote origin URL（用于跨设备项目归并）
     created_at INTEGER NOT NULL DEFAULT (strftime('%s', 'now') * 1000),
     updated_at INTEGER NOT NULL DEFAULT (strftime('%s', 'now') * 1000)
 );
