@@ -5,7 +5,7 @@
 //! - Windows: Named Pipe
 
 use std::fs;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
@@ -30,6 +30,7 @@ use super::broadcaster::ConnectionManager;
 use super::handler::Handler;
 use super::watcher::FileWatcher;
 use crate::protocol::{Request, Response};
+use crate::sync::SyncWorker;
 use crate::{DbConfig, SessionDB};
 
 /// Agent 配置
@@ -94,11 +95,12 @@ impl AgentConfig {
 /// Agent 服务
 pub struct Agent {
     config: AgentConfig,
-    #[allow(dead_code)] // 预留，未来扩展功能使用
+    #[allow(dead_code)]
     db: Arc<SessionDB>,
     connections: Arc<ConnectionManager>,
     watcher: Arc<FileWatcher>,
     handler: Arc<Handler>,
+    sync_worker: Arc<SyncWorker>,
     shutdown: Arc<AtomicBool>,
 }
 
@@ -121,8 +123,16 @@ impl Agent {
         // 创建文件监听器
         let watcher = FileWatcher::new(db.clone());
 
+        // 加载 sync 配置并启动 worker
+        let sync_worker = {
+            let sync_config = Self::load_sync_config(&config.data_dir);
+            let filter_config = Self::load_filter_config(&config.data_dir);
+            let db_dir = config.data_dir.join("db");
+            Arc::new(SyncWorker::start(sync_config, filter_config, &db_dir)?)
+        };
+
         // 创建处理器
-        let handler = Arc::new(Handler::new(db.clone(), connections.clone(), watcher.clone()));
+        let handler = Arc::new(Handler::new(db.clone(), connections.clone(), watcher.clone(), sync_worker.clone()));
 
         Ok(Self {
             config,
@@ -130,6 +140,7 @@ impl Agent {
             connections,
             watcher,
             handler,
+            sync_worker,
             shutdown: Arc::new(AtomicBool::new(false)),
         })
     }
@@ -345,6 +356,34 @@ impl Agent {
         fs::set_permissions(&pid_path, fs::Permissions::from_mode(0o600))?;
         tracing::debug!("📝 Writing PID file: {} (pid={})", pid_path.display(), pid);
         Ok(())
+    }
+
+    fn load_sync_config(data_dir: &Path) -> crate::sync::SyncConfig {
+        let path = data_dir.join("memex/config.json");
+        if let Ok(content) = std::fs::read_to_string(&path) {
+            if let Ok(json) = serde_json::from_str::<serde_json::Value>(&content) {
+                if let Some(sync) = json.get("sync") {
+                    if let Ok(config) = serde_json::from_value(sync.clone()) {
+                        return config;
+                    }
+                }
+            }
+        }
+        crate::sync::SyncConfig::default()
+    }
+
+    fn load_filter_config(data_dir: &Path) -> crate::sync::FilterConfig {
+        let path = data_dir.join("memex/config.json");
+        if let Ok(content) = std::fs::read_to_string(&path) {
+            if let Ok(json) = serde_json::from_str::<serde_json::Value>(&content) {
+                if let Some(filter) = json.get("filter") {
+                    if let Ok(config) = serde_json::from_value(filter.clone()) {
+                        return config;
+                    }
+                }
+            }
+        }
+        crate::sync::FilterConfig::default()
     }
 
     /// 清理资源

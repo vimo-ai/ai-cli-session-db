@@ -8,6 +8,7 @@ use std::sync::Arc;
 use super::broadcaster::{ConnectionManager, ConnId};
 use super::watcher::FileWatcher;
 use crate::protocol::{HookEvent, QueryType, Request, Response};
+use crate::sync::SyncWorker;
 use crate::SessionDB;
 
 /// Agent 版本号（跟随 crate 版本）
@@ -21,15 +22,23 @@ pub struct Handler {
     connections: Arc<ConnectionManager>,
     /// 文件监听器
     watcher: Arc<FileWatcher>,
+    /// 同步 worker
+    sync_worker: Arc<SyncWorker>,
 }
 
 impl Handler {
     /// 创建处理器
-    pub fn new(db: Arc<SessionDB>, connections: Arc<ConnectionManager>, watcher: Arc<FileWatcher>) -> Self {
+    pub fn new(
+        db: Arc<SessionDB>,
+        connections: Arc<ConnectionManager>,
+        watcher: Arc<FileWatcher>,
+        sync_worker: Arc<SyncWorker>,
+    ) -> Self {
         Self {
             db,
             connections,
             watcher,
+            sync_worker,
         }
     }
 
@@ -101,6 +110,7 @@ impl Handler {
             };
         }
 
+        self.sync_worker.trigger();
         Response::Ok
     }
 
@@ -223,6 +233,7 @@ impl Handler {
                     // 不返回错误
                 }
                 tracing::info!("🪝 After trigger_collect");
+                self.sync_worker.trigger();
             } else {
                 tracing::debug!("HookEvent transcript_path not found: {}", path_str);
             }

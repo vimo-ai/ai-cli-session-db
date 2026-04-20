@@ -56,11 +56,20 @@ impl SyncClient {
             None
         };
 
-        let http = reqwest::Client::builder()
+        let mut http_builder = reqwest::Client::builder()
             .timeout(std::time::Duration::from_secs(30))
-            .gzip(config.compress)
-            .build()
-            .context("创建 HTTP client 失败")?;
+            .gzip(config.compress);
+
+        if let Some(ref ca_path) = config.ca_cert {
+            let ca_path = shellexpand::tilde(ca_path);
+            let ca_pem = std::fs::read(ca_path.as_ref())
+                .with_context(|| format!("读取 CA cert 失败: {ca_path}"))?;
+            let cert = reqwest::Certificate::from_pem(&ca_pem)
+                .context("解析 CA cert 失败")?;
+            http_builder = http_builder.add_root_certificate(cert);
+        }
+
+        let http = http_builder.build().context("创建 HTTP client 失败")?;
 
         Ok(Self {
             config,
