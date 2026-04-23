@@ -54,9 +54,27 @@ impl ConnectionManager {
         self.senders.read().len()
     }
 
-    /// 检查是否有活跃连接
+    /// 清理已断开的连接，返回剩余连接数
+    pub fn cleanup_closed(&self) -> usize {
+        let mut senders = self.senders.write();
+        let before = senders.len();
+        senders.retain(|id, sender| {
+            let alive = !sender.is_closed();
+            if !alive {
+                tracing::debug!("📡 Cleaning up dead connection: conn_id={}", id);
+            }
+            alive
+        });
+        let after = senders.len();
+        if before != after {
+            tracing::info!("📡 Cleaned {} dead connections, {} remaining", before - after, after);
+        }
+        after
+    }
+
+    /// 检查是否有活跃连接（同时清理死连接）
     pub fn has_connections(&self) -> bool {
-        !self.senders.read().is_empty()
+        self.cleanup_closed() > 0
     }
 
     /// 发送消息到指定连接

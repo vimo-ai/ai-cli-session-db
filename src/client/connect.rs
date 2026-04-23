@@ -5,7 +5,7 @@
 //! - Windows: Named Pipe
 
 use std::fs::{self, OpenOptions};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::time::Duration;
 
@@ -635,8 +635,8 @@ fn start_agent(config: &ClientConfig) -> Result<()> {
 
     tracing::info!("Starting Agent: {:?}", agent_path);
 
-    // 打开日志文件（追加模式）
     let log_path = config.data_dir.join("agent.log");
+    rotate_log(&log_path, 30);
     let log_file = OpenOptions::new()
         .create(true)
         .append(true)
@@ -650,6 +650,48 @@ fn start_agent(config: &ClientConfig) -> Result<()> {
         .context("Failed to start Agent")?;
 
     Ok(())
+}
+
+/// 日志轮转：归档当前日志，清理过期文件
+///
+/// 每次 agent 启动时调用：
+/// - 将 `agent.log` 重命名为 `agent.log.20260422-153012`
+/// - 删除超过 `retention_days` 天的归档日志
+fn rotate_log(log_path: &Path, retention_days: u32) {
+    if log_path.metadata().map_or(true, |m| m.len() == 0) {
+        return;
+    }
+
+    let timestamp = chrono::Local::now().format("%Y%m%d-%H%M%S");
+    let archive_path = log_path.with_extension(format!("log.{timestamp}"));
+    if let Err(e) = fs::rename(log_path, &archive_path) {
+        tracing::warn!("Failed to rotate log: {e}");
+        return;
+    }
+
+    let dir = match log_path.parent() {
+        Some(d) => d,
+        None => return,
+    };
+    let prefix = "agent.log.";
+    let cutoff = chrono::Local::now() - chrono::Duration::days(retention_days as i64);
+    let cutoff_str = cutoff.format("%Y%m%d").to_string();
+
+    let entries = match fs::read_dir(dir) {
+        Ok(e) => e,
+        Err(_) => return,
+    };
+    for entry in entries.flatten() {
+        let name = entry.file_name();
+        let name = name.to_string_lossy();
+        if let Some(date_part) = name.strip_prefix(prefix) {
+            if date_part.len() >= 8 && date_part[..8] < *cutoff_str {
+                if let Err(e) = fs::remove_file(entry.path()) {
+                    tracing::warn!("Failed to remove old log {name}: {e}");
+                }
+            }
+        }
+    }
 }
 
 /// 从 GitHub Release 下载 vimo-agent
