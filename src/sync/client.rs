@@ -12,7 +12,7 @@ use tracing::{debug, error, info, warn};
 use super::{
     FilterConfig, ProjectFilter, SensitiveWordFilter, SyncBatch, SyncChainNode,
     SyncConfig, SyncContinuationChain, SyncCursor, SyncDb, SyncMessage, SyncProject,
-    SyncPushRequest, SyncPushResponse, SyncSession, SyncSessionRelation, SyncTalk,
+    SyncPushRequest, SyncPushResponse, SyncSession, SyncSessionRelation, SyncStream, SyncTalk,
 };
 
 pub struct SyncClient {
@@ -130,7 +130,7 @@ impl SyncClient {
 
         loop {
             // collect 阶段：打开只读连接，读完立即释放，不跨 await
-            let (mut batch, batch_max_seq, batch_len) = {
+            let (batch, batch_max_seq, batch_len) = {
                 let conn = self.open_readonly()?;
                 let mut batch =
                     self.collect_batch(&conn, session_id, project_path, current_cursor)?;
@@ -182,6 +182,156 @@ impl SyncClient {
             messages_pushed: total_pushed,
             messages_skipped: total_skipped,
         })
+    }
+
+    /// Collect + filter one batch (no network I/O). Returns (batch, max_sequence, raw_len).
+    pub fn collect_and_filter_batch(
+        &self,
+        session_id: &str,
+        project_path: &str,
+        after_sequence: i64,
+    ) -> Result<Option<(SyncBatch, i64, usize)>> {
+        let conn = self.open_readonly()?;
+        let mut batch = self.collect_batch(&conn, session_id, project_path, after_sequence)?;
+
+        if batch.messages.is_empty() {
+            return Ok(None);
+        }
+
+        let batch_max_seq = batch.messages.iter().map(|m| m.sequence).max().unwrap_or(after_sequence);
+
+        self.project_filter.filter_batch(&mut batch);
+        if let Some(ref wf) = self.word_filter {
+            wf.filter_batch(&mut batch);
+        }
+
+        let batch_len = batch.messages.len();
+        Ok(Some((batch, batch_max_seq, batch_len)))
+    }
+
+    pub(crate) async fn sync_session_ws(
+        &self,
+        stream: &mut SyncStream,
+        session_id: &str,
+        project_path: &str,
+    ) -> Result<BatchStats> {
+        let (last_sequence, _) = self.sync_db.get_cursor(session_id)?;
+        let mut total_pushed = 0u64;
+        let mut total_skipped = 0u64;
+        let mut current_cursor = last_sequence;
+
+        loop {
+            let Some((batch, batch_max_seq, batch_len)) =
+                self.collect_and_filter_batch(session_id, project_path, current_cursor)?
+            else {
+                return Ok(BatchStats {
+                    messages_pushed: total_pushed,
+                    messages_skipped: total_skipped,
+                });
+            };
+
+            if batch.messages.is_empty() {
+                current_cursor = batch_max_seq;
+                self.sync_db.update_cursor(session_id, current_cursor)?;
+                continue;
+            }
+
+            let cursors = batch
+                .messages
+                .iter()
+                .fold(std::collections::HashMap::new(), |mut acc, m| {
+                    let entry = acc.entry(m.session_id.clone()).or_insert_with(|| SyncCursor {
+                        last_sequence: 0,
+                        last_timestamp: 0,
+                    });
+                    if m.sequence > entry.last_sequence {
+                        entry.last_sequence = m.sequence;
+                        entry.last_timestamp = m.timestamp;
+                    }
+                    acc
+                });
+
+            let ack = stream.push(&batch, &cursors).await?;
+
+            match ack {
+                super::SyncAck::PushOk { accepted, skipped, .. } => {
+                    total_pushed += accepted;
+                    total_skipped += skipped;
+                }
+                super::SyncAck::PushFail { message } => {
+                    anyhow::bail!("ws push failed: {message}");
+                }
+                _ => {}
+            }
+
+            current_cursor = batch_max_seq;
+            self.sync_db.update_cursor(session_id, current_cursor)?;
+
+            if batch_len < self.config.batch_size {
+                break;
+            }
+        }
+
+        Ok(BatchStats {
+            messages_pushed: total_pushed,
+            messages_skipped: total_skipped,
+        })
+    }
+
+    /// Full sync cycle via WebSocket
+    pub async fn sync_once_ws(&self, stream: &mut SyncStream) -> Result<SyncStats> {
+        let mut stats = SyncStats::default();
+
+        let sessions = {
+            let conn = self.open_readonly()?;
+            self.list_syncable_sessions(&conn)?
+        };
+
+        if sessions.is_empty() {
+            return Ok(stats);
+        }
+
+        for (session_id, project_path) in &sessions {
+            match self.sync_session_ws(stream, session_id, project_path).await {
+                Ok(batch_stats) => {
+                    stats.sessions_synced += 1;
+                    stats.messages_pushed += batch_stats.messages_pushed;
+                    stats.messages_skipped += batch_stats.messages_skipped;
+                }
+                Err(e) => {
+                    error!(
+                        "ws sync session {} failed: {}",
+                        &session_id[..8.min(session_id.len())],
+                        e
+                    );
+                    return Err(e);
+                }
+            }
+        }
+
+        if stats.sessions_synced > 0 {
+            info!(
+                "ws sync done: {} sessions, {} pushed, {} skipped",
+                stats.sessions_synced, stats.messages_pushed, stats.messages_skipped
+            );
+        }
+
+        Ok(stats)
+    }
+
+    pub fn query_last_db_updated_at(&self) -> i64 {
+        self.open_readonly()
+            .ok()
+            .and_then(|conn| {
+                conn.query_row(
+                    "SELECT MAX(updated_at) FROM sessions",
+                    [],
+                    |row| row.get::<_, Option<i64>>(0),
+                )
+                .ok()
+                .flatten()
+            })
+            .unwrap_or(0)
     }
 
     fn collect_batch(
@@ -519,9 +669,9 @@ pub struct SyncStats {
 }
 
 #[derive(Debug, Default)]
-struct BatchStats {
-    messages_pushed: u64,
-    messages_skipped: u64,
+pub(crate) struct BatchStats {
+    pub(crate) messages_pushed: u64,
+    pub(crate) messages_skipped: u64,
 }
 
 #[cfg(test)]

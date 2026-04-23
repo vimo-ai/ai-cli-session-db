@@ -8,11 +8,13 @@
 mod db;
 mod filter;
 mod client;
+mod stream;
 mod worker;
 
 pub use db::SyncDb;
 pub use filter::{SensitiveWordFilter, ProjectFilter, FilterConfig, FilterMode};
 pub use client::{SyncClient, SyncStats};
+pub use stream::SyncStream;
 pub use worker::SyncWorker;
 
 use serde::{Deserialize, Serialize};
@@ -167,4 +169,44 @@ pub struct SyncTalk {
     pub talk_id: String,
     pub summary_l2: String,
     pub summary_l3: Option<String>,
+}
+
+// ==================== WebSocket 流式协议 ====================
+
+/// Client → Server frame
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(tag = "type")]
+pub enum SyncFrame {
+    Auth {
+        device_id: String,
+        api_key: String,
+    },
+    Push {
+        batch: SyncBatch,
+        cursors: std::collections::HashMap<String, SyncCursor>,
+    },
+    Heartbeat {
+        last_db_updated_at: i64,
+    },
+}
+
+/// Server → Client ack
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(tag = "type")]
+pub enum SyncAck {
+    AuthOk {
+        server_version: String,
+    },
+    AuthFail {
+        message: String,
+    },
+    PushOk {
+        accepted: u64,
+        skipped: u64,
+        server_cursors: std::collections::HashMap<String, SyncCursor>,
+    },
+    PushFail {
+        message: String,
+    },
+    HeartbeatOk,
 }

@@ -8,7 +8,7 @@ use std::sync::Arc;
 use super::broadcaster::{ConnectionManager, ConnId};
 use super::watcher::FileWatcher;
 use crate::protocol::{HookEvent, QueryType, Request, Response};
-use crate::sync::SyncWorker;
+use crate::sync::{SyncDb, SyncWorker};
 use crate::SessionDB;
 
 /// Agent 版本号（跟随 crate 版本）
@@ -24,6 +24,8 @@ pub struct Handler {
     watcher: Arc<FileWatcher>,
     /// 同步 worker
     sync_worker: Arc<SyncWorker>,
+    /// 同步状态 DB
+    sync_db: Arc<SyncDb>,
 }
 
 impl Handler {
@@ -33,12 +35,14 @@ impl Handler {
         connections: Arc<ConnectionManager>,
         watcher: Arc<FileWatcher>,
         sync_worker: Arc<SyncWorker>,
+        sync_db: Arc<SyncDb>,
     ) -> Self {
         Self {
             db,
             connections,
             watcher,
             sync_worker,
+            sync_db,
         }
     }
 
@@ -93,6 +97,16 @@ impl Handler {
 
             Request::HookEvent(hook_event) => {
                 self.handle_hook_event(hook_event).await
+            }
+
+            Request::SyncPause => {
+                self.sync_worker.pause(&self.sync_db);
+                Response::Ok
+            }
+
+            Request::SyncResume => {
+                self.sync_worker.resume(&self.sync_db);
+                Response::Ok
             }
         }
     }
@@ -208,6 +222,16 @@ impl Handler {
                 let count = self.connections.connection_count();
                 Response::QueryResult {
                     data: serde_json::json!({ "count": count }),
+                }
+            }
+            QueryType::SyncStatus => {
+                let paused = self.sync_worker.is_paused();
+                let running = self.sync_worker.is_running();
+                Response::QueryResult {
+                    data: serde_json::json!({
+                        "paused": paused,
+                        "running": running,
+                    }),
                 }
             }
         }

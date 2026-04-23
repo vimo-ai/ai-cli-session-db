@@ -116,6 +116,12 @@ pub enum Request {
     ///
     /// 触发即时 Collection
     HookEvent(HookEvent),
+
+    /// 暂停同步
+    SyncPause,
+
+    /// 恢复同步
+    SyncResume,
 }
 
 /// 响应类型（Agent → Client）
@@ -152,7 +158,7 @@ pub enum ApprovalStatus {
     Timeout,
 }
 
-/// 查询类型（预留）
+/// 查询类型
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "query")]
 pub enum QueryType {
@@ -160,6 +166,8 @@ pub enum QueryType {
     Status,
     /// 获取连接数
     ConnectionCount,
+    /// 获取同步状态
+    SyncStatus,
 }
 
 #[cfg(test)]

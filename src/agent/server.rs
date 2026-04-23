@@ -100,6 +100,7 @@ pub struct Agent {
     connections: Arc<ConnectionManager>,
     watcher: Arc<FileWatcher>,
     handler: Arc<Handler>,
+    #[allow(dead_code)]
     sync_worker: Arc<SyncWorker>,
     shutdown: Arc<AtomicBool>,
 }
@@ -124,15 +125,17 @@ impl Agent {
         let watcher = FileWatcher::new(db.clone());
 
         // 加载 sync 配置并启动 worker
-        let sync_worker = {
+        let (sync_worker, sync_db) = {
             let sync_config = Self::load_sync_config(&config.data_dir);
             let filter_config = Self::load_filter_config(&config.data_dir);
             let db_dir = config.data_dir.join("db");
-            Arc::new(SyncWorker::start(sync_config, filter_config, &db_dir)?)
+            let sync_db = Arc::new(crate::sync::SyncDb::open(&db_dir)?);
+            let worker = Arc::new(SyncWorker::start(sync_config, filter_config, sync_db.clone(), &db_dir)?);
+            (worker, sync_db)
         };
 
         // 创建处理器
-        let handler = Arc::new(Handler::new(db.clone(), connections.clone(), watcher.clone(), sync_worker.clone()));
+        let handler = Arc::new(Handler::new(db.clone(), connections.clone(), watcher.clone(), sync_worker.clone(), sync_db));
 
         Ok(Self {
             config,
@@ -207,10 +210,32 @@ impl Agent {
             agent_for_idle.idle_checker().await;
         });
 
+        // 终止信号：SIGTERM (Unix) / ctrl_c 统一为一个 future
+        let shutdown_signal = async {
+            #[cfg(unix)]
+            {
+                let mut sigterm = tokio::signal::unix::signal(
+                    tokio::signal::unix::SignalKind::terminate(),
+                ).expect("Failed to register SIGTERM handler");
+                tokio::select! {
+                    _ = tokio::signal::ctrl_c() => {
+                        tracing::info!("Received SIGINT, shutting down...");
+                    }
+                    _ = sigterm.recv() => {
+                        tracing::info!("Received SIGTERM, shutting down gracefully...");
+                    }
+                }
+            }
+            #[cfg(not(unix))]
+            {
+                tokio::signal::ctrl_c().await.ok();
+                tracing::info!("Received interrupt signal, shutting down...");
+            }
+        };
+        tokio::pin!(shutdown_signal);
+
         // 接受连接
         loop {
-            // 只有当 shutdown 信号发出 且 没有活跃连接 时才退出
-            // 这样新连接进来后可以取消退出
             if self.shutdown.load(Ordering::Relaxed) && !self.connections.has_connections() {
                 break;
             }
@@ -231,12 +256,10 @@ impl Agent {
                         }
                     }
                 }
-                _ = tokio::signal::ctrl_c() => {
-                    tracing::info!("Received interrupt signal, preparing to exit...");
+                _ = &mut shutdown_signal => {
                     break;
                 }
                 _ = tokio::time::sleep(Duration::from_secs(5)) => {
-                    // 定期回到循环顶部检查 shutdown 条件
                     continue;
                 }
             }
