@@ -38,21 +38,20 @@ impl SessionDB {
             std::fs::create_dir_all(parent)?;
         }
 
-        // 尝试打开数据库，处理 WAL 不匹配导致的 malformed 错误
         let conn = match Connection::open(path) {
             Ok(c) => c,
             Err(e) if Self::is_malformed_error(&e) => {
-                tracing::warn!("数据库打开失败 (malformed): {}", e);
-                // 尝试恢复 WAL 不匹配问题
-                if Self::try_recover_from_wal_mismatch(path) {
-                    tracing::info!("WAL 恢复成功，重试打开数据库...");
-                    Connection::open(path)?
-                } else {
-                    return Err(Error::Connection(format!(
-                        "数据库损坏且无法恢复: {}",
-                        e
-                    )));
-                }
+                let wal_exists = path.with_extension("db-wal").exists();
+                let shm_exists = path.with_extension("db-shm").exists();
+                let diag = format!(
+                    "{} (WAL: {}, SHM: {})",
+                    e,
+                    if wal_exists { "exists" } else { "missing" },
+                    if shm_exists { "exists" } else { "missing" },
+                );
+                tracing::error!("数据库损坏，需要修复: {}", diag);
+                Self::write_repair_marker(path, &diag);
+                return Err(Error::DatabaseMalformed(diag));
             }
             Err(e) => return Err(e.into()),
         };
@@ -83,41 +82,18 @@ impl SessionDB {
         e.to_string().to_lowercase().contains("malformed")
     }
 
-    /// 尝试从 WAL 不匹配问题中恢复
-    ///
-    /// 场景：用户从备份恢复数据库但没删除旧的 WAL/SHM 文件，
-    /// 新数据库文件和旧 WAL/SHM 不匹配，SQLite 打开时会报 "malformed"。
-    ///
-    /// 恢复策略：备份 WAL 文件后删除，然后重试打开。
-    /// 如果重试成功说明是 WAL 不匹配问题；如果仍失败说明是真正的数据库损坏。
-    fn try_recover_from_wal_mismatch(db_path: &Path) -> bool {
-        let wal_path = db_path.with_extension("db-wal");
-        let shm_path = db_path.with_extension("db-shm");
-
-        // 如果没有 WAL 文件，不是 WAL 不匹配问题
-        if !wal_path.exists() {
-            tracing::debug!("无 WAL 文件，不是 WAL 不匹配问题");
-            return false;
+    /// 写修复标记文件，供上层（ETerm UI / CLI）检测
+    fn write_repair_marker(db_path: &Path, diagnostic: &str) {
+        let marker = db_path.with_extension("db-repair-needed");
+        let content = format!(
+            "time={}\npath={}\ndiag={}\n",
+            chrono::Utc::now().to_rfc3339(),
+            db_path.display(),
+            diagnostic,
+        );
+        if let Err(e) = std::fs::write(&marker, content) {
+            tracing::warn!("Failed to write repair marker: {}", e);
         }
-
-        // 备份 WAL 文件（以防万一需要恢复）
-        let backup_path = wal_path.with_extension("db-wal.backup");
-        if let Err(e) = std::fs::rename(&wal_path, &backup_path) {
-            tracing::warn!("备份 WAL 文件失败: {}", e);
-            return false;
-        }
-        tracing::info!("已备份 WAL 文件: {:?} -> {:?}", wal_path, backup_path);
-
-        // 删除 SHM 文件（SHM 是共享内存索引，可以安全删除）
-        if shm_path.exists() {
-            if let Err(e) = std::fs::remove_file(&shm_path) {
-                tracing::warn!("删除 SHM 文件失败: {}", e);
-            } else {
-                tracing::info!("已删除 SHM 文件: {:?}", shm_path);
-            }
-        }
-
-        true
     }
 
     /// 获取底层连接 (用于测试)

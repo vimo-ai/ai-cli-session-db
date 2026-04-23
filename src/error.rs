@@ -29,6 +29,10 @@ pub enum Error {
     #[error("连接错误: {0}")]
     Connection(String),
 
+    /// 数据库损坏（需要用户介入修复）
+    #[error("数据库损坏: {0}")]
+    DatabaseMalformed(String),
+
     /// 权限错误 (Reader 尝试写入)
     #[error("权限错误: 当前角色为 Reader，无法执行写入操作")]
     PermissionDenied,
