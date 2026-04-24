@@ -124,7 +124,9 @@ impl Handler {
             };
         }
 
-        self.sync_worker.trigger();
+        if let Some(session_id) = path.file_stem().and_then(|s| s.to_str()) {
+            self.sync_worker.trigger_session(session_id);
+        }
         Response::Ok
     }
 
@@ -257,7 +259,7 @@ impl Handler {
                     // 不返回错误
                 }
                 tracing::info!("🪝 After trigger_collect");
-                self.sync_worker.trigger();
+                self.sync_worker.trigger_session(&event.session_id);
             } else {
                 tracing::debug!("HookEvent transcript_path not found: {}", path_str);
             }

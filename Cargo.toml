@@ -58,9 +58,9 @@ file-id = "0.2"                                            # 文件标识 (inode
 # 同步模块（可选）
 aho-corasick = { version = "1", optional = true }          # 敏感词多模式匹配
 globset = { version = "0.4", optional = true }             # 项目白名单 glob
-reqwest = { version = "0.12", features = ["json", "gzip", "rustls-tls"], default-features = false, optional = true }  # HTTP client
+reqwest = { version = "0.12", features = ["json", "gzip", "rustls-tls-manual-roots"], default-features = false, optional = true }  # HTTP client
 shellexpand = { version = "3", optional = true }           # ~ 路径展开
-tokio-tungstenite = { version = "0.26", features = ["native-tls"], optional = true }  # WebSocket client
+tokio-tungstenite = { version = "0.26", optional = true }  # WebSocket client (disabled in event-driven mode)
 futures-util = { version = "0.3", optional = true }         # WebSocket stream/sink traits
 
 [target.'cfg(unix)'.dependencies]

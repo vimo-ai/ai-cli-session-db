@@ -7,7 +7,7 @@ use anyhow::{Context, Result};
 use rusqlite::{params, Connection, OpenFlags};
 use std::path::Path;
 use std::sync::Arc;
-use tracing::{debug, error, info, warn};
+use tracing::{error, info, warn};
 
 use super::{
     FilterConfig, ProjectFilter, SensitiveWordFilter, SyncBatch, SyncChainNode,
@@ -66,10 +66,13 @@ impl SyncClient {
                 .with_context(|| format!("读取 CA cert 失败: {ca_path}"))?;
             let cert = reqwest::Certificate::from_pem(&ca_pem)
                 .context("解析 CA cert 失败")?;
+            info!("CA cert loaded: {} ({} bytes)", ca_path, ca_pem.len());
             http_builder = http_builder.add_root_certificate(cert);
+        } else {
+            warn!("no CA cert configured");
         }
 
-        let http = http_builder.build().context("创建 HTTP client 失败")?;
+        let http = http_builder.use_rustls_tls().build().context("创建 HTTP client 失败")?;
 
         Ok(Self {
             config,
@@ -138,22 +141,43 @@ impl SyncClient {
         Ok(resp.api_key)
     }
 
-    /// 单次同步：collect → filter → push → update cursor
+    pub async fn sync_single_session(&self, session_id: &str) -> Result<BatchStats> {
+        let project_path = {
+            let conn = self.open_readonly()?;
+            let result = conn.query_row(
+                "SELECT p.path FROM sessions s JOIN projects p ON s.project_id = p.id WHERE s.session_id = ?1",
+                params![session_id],
+                |row| row.get::<_, String>(0),
+            );
+            match result {
+                Ok(path) => path,
+                Err(rusqlite::Error::QueryReturnedNoRows) => return Ok(BatchStats::default()),
+                Err(e) => return Err(e.into()),
+            }
+        };
+
+        if !self.project_filter.is_allowed(&project_path) {
+            return Ok(BatchStats::default());
+        }
+
+        self.sync_session(session_id, &project_path).await
+    }
+
+    /// 定时全量对齐：collect → filter → push → update cursor
     pub async fn sync_once(&self) -> Result<SyncStats> {
         let mut stats = SyncStats::default();
 
-        // 在同步块内完成所有 DB 读取，不让 Connection 跨 await
-        let sessions = {
+        // 用一个连接完成 list + 预筛选，避免为每个 session 都开连接做 schema 初始化
+        let sessions_to_sync = {
             let conn = self.open_readonly()?;
-            self.list_syncable_sessions(&conn)?
+            self.list_sessions_with_new_messages(&conn)?
         };
 
-        if sessions.is_empty() {
-            debug!("无需同步的 session");
+        if sessions_to_sync.is_empty() {
             return Ok(stats);
         }
 
-        for (session_id, project_path) in &sessions {
+        for (session_id, project_path) in &sessions_to_sync {
             match self.sync_session(session_id, project_path).await {
                 Ok(batch_stats) => {
                     stats.sessions_synced += 1;
@@ -162,7 +186,7 @@ impl SyncClient {
                 }
                 Err(e) => {
                     stats.sessions_failed += 1;
-                    error!("sync session {} 失败: {}", &session_id[..8.min(session_id.len())], e);
+                    error!("sync session {} 失败: {:?}", &session_id[..8.min(session_id.len())], e);
                 }
             }
         }
@@ -341,7 +365,7 @@ impl SyncClient {
 
         let sessions = {
             let conn = self.open_readonly()?;
-            self.list_syncable_sessions(&conn)?
+            self.list_sessions_with_new_messages(&conn)?
         };
 
         if sessions.is_empty() {
@@ -480,6 +504,49 @@ impl SyncClient {
         conn.execute_batch("PRAGMA query_only=ON;")?;
 
         Ok(conn)
+    }
+
+    fn list_sessions_with_new_messages(&self, conn: &Connection) -> Result<Vec<(String, String)>> {
+        let sync_db_path = self.sync_db.path().to_string_lossy().to_string();
+        conn.execute(
+            "ATTACH DATABASE ?1 AS sync_db",
+            params![&sync_db_path],
+        )?;
+
+        let result = (|| -> Result<Vec<(String, String)>> {
+            let mut stmt = conn.prepare(
+                r#"
+                SELECT s.session_id, p.path
+                FROM sessions s
+                JOIN projects p ON s.project_id = p.id
+                WHERE s.message_count > 0
+                  AND EXISTS (
+                    SELECT 1 FROM messages m
+                    WHERE m.session_id = s.session_id
+                      AND m.sequence > COALESCE(
+                        (SELECT last_sequence FROM sync_db.sync_cursors sc
+                         WHERE sc.session_id = s.session_id),
+                        0
+                      )
+                  )
+                "#,
+            )?;
+
+            let rows = stmt.query_map([], |row| {
+                Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+            })?;
+
+            let all: Vec<(String, String)> = rows
+                .collect::<std::result::Result<Vec<_>, _>>()?;
+
+            Ok(all
+                .into_iter()
+                .filter(|(_, path)| self.project_filter.is_allowed(path))
+                .collect())
+        })();
+
+        conn.execute_batch("DETACH DATABASE sync_db")?;
+        result
     }
 
     fn list_syncable_sessions(&self, conn: &Connection) -> Result<Vec<(String, String)>> {
@@ -728,9 +795,9 @@ pub struct SyncStats {
 }
 
 #[derive(Debug, Default)]
-pub(crate) struct BatchStats {
-    pub(crate) messages_pushed: u64,
-    pub(crate) messages_skipped: u64,
+pub struct BatchStats {
+    pub messages_pushed: u64,
+    pub messages_skipped: u64,
 }
 
 #[cfg(test)]

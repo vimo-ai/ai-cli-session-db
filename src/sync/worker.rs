@@ -1,25 +1,25 @@
-//! Sync Worker - WebSocket streaming + HTTP fallback
+//! Sync Worker - 事件驱动同步
 //!
-//! 优先 WebSocket 流式推送，失败后自动 fallback 到 HTTP 轮询。
-//! 支持 pause/resume 控制。
+//! - trigger_session(id): 有数据变更时，只同步该 session
+//! - 定时全量对齐: 每 interval_seconds 扫一次兜底补漏
 
+use std::collections::{HashMap, HashSet};
 use std::path::Path;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 
 use anyhow::Result;
-use tokio::sync::{mpsc, Notify};
+use tokio::sync::mpsc;
+use tokio::time::Instant;
 use tracing::{error, info, warn};
 
-use super::{FilterConfig, SyncClient, SyncConfig, SyncDb, SyncStream};
+use super::{FilterConfig, SyncClient, SyncConfig, SyncDb};
 
-const HEARTBEAT_INTERVAL: Duration = Duration::from_secs(90);
-const RECONNECT_BASE: Duration = Duration::from_secs(1);
-const RECONNECT_CAP: Duration = Duration::from_secs(60);
+const FAILURE_COOLDOWN: Duration = Duration::from_secs(60);
 
 pub struct SyncWorker {
-    trigger: Arc<Notify>,
+    trigger_tx: mpsc::UnboundedSender<String>,
     shutdown_tx: Option<mpsc::Sender<()>>,
     paused: Arc<AtomicBool>,
 }
@@ -35,14 +35,14 @@ impl SyncWorker {
 
         if !config.enabled {
             info!("sync disabled, worker not started");
+            let (trigger_tx, _) = mpsc::unbounded_channel();
             return Ok(Self {
-                trigger: Arc::new(Notify::new()),
+                trigger_tx,
                 shutdown_tx: None,
                 paused,
             });
         }
 
-        // Restore pause state
         if let Ok(Some(v)) = sync_db.get_state("sync_paused") {
             if v == "true" {
                 paused.store(true, Ordering::Relaxed);
@@ -51,17 +51,15 @@ impl SyncWorker {
         }
 
         let client = SyncClient::new(config.clone(), filter_config, sync_db.clone(), db_dir)?;
-        let http_interval = Duration::from_secs(config.interval_seconds);
-        let trigger = Arc::new(Notify::new());
-        let trigger_clone = trigger.clone();
+        let interval = Duration::from_secs(config.interval_seconds);
+        let (trigger_tx, trigger_rx) = mpsc::unbounded_channel::<String>();
         let paused_clone = paused.clone();
-        let sync_db_clone = sync_db.clone();
-        let (shutdown_tx, mut shutdown_rx) = mpsc::channel::<()>(1);
+        let (shutdown_tx, shutdown_rx) = mpsc::channel::<()>(1);
 
         tokio::spawn(async move {
             info!("sync worker started");
 
-            if sync_db_clone.get_state("api_key").ok().flatten().is_none()
+            if sync_db.get_state("api_key").ok().flatten().is_none()
                 && !config.master_key.is_empty()
                 && !config.name.is_empty()
             {
@@ -72,92 +70,20 @@ impl SyncWorker {
                 }
             }
 
-            let mut reconnect_delay = RECONNECT_BASE;
-
-            loop {
-                if shutdown_rx.try_recv().is_ok() {
-                    break;
-                }
-
-                if paused_clone.load(Ordering::Relaxed) {
-                    tokio::select! {
-                        _ = shutdown_rx.recv() => break,
-                        _ = tokio::time::sleep(Duration::from_secs(5)) => continue,
-                    }
-                }
-
-                // Try WebSocket streaming mode
-                match SyncStream::connect(&config.server).await {
-                    Ok(mut stream) => {
-                        let device_id = sync_db_clone
-                            .get_or_init_device_id()
-                            .unwrap_or_else(|_| "unknown".to_string());
-
-                        let api_key = client
-                            .effective_api_key()
-                            .unwrap_or_default();
-
-                        match stream.authenticate(&device_id, &api_key).await {
-                            Ok(()) => {
-                                reconnect_delay = RECONNECT_BASE;
-                                info!("ws streaming mode active");
-
-                                let exit = run_streaming_loop(
-                                    &mut stream,
-                                    &client,
-                                    &trigger_clone,
-                                    &paused_clone,
-                                    &mut shutdown_rx,
-                                )
-                                .await;
-
-                                stream.close().await;
-
-                                if exit {
-                                    break;
-                                }
-
-                                warn!("ws disconnected, will reconnect");
-                            }
-                            Err(e) => {
-                                warn!("ws auth failed: {e}, falling back to HTTP");
-                                stream.close().await;
-                            }
-                        }
-                    }
-                    Err(e) => {
-                        info!("ws connect failed ({e}), using HTTP fallback");
-                    }
-                }
-
-                // HTTP fallback: run one poll cycle, then wait before retrying ws
-                if !paused_clone.load(Ordering::Relaxed) {
-                    run_http_fallback(
-                        &client,
-                        &trigger_clone,
-                        &paused_clone,
-                        &mut shutdown_rx,
-                        http_interval,
-                        reconnect_delay,
-                    )
-                    .await;
-                }
-
-                reconnect_delay = (reconnect_delay * 2).min(RECONNECT_CAP);
-            }
+            run_event_loop(&client, trigger_rx, &paused_clone, shutdown_rx, interval).await;
 
             info!("sync worker exited");
         });
 
         Ok(Self {
-            trigger,
+            trigger_tx,
             shutdown_tx: Some(shutdown_tx),
             paused,
         })
     }
 
-    pub fn trigger(&self) {
-        self.trigger.notify_one();
+    pub fn trigger_session(&self, session_id: &str) {
+        let _ = self.trigger_tx.send(session_id.to_string());
     }
 
     pub async fn shutdown(mut self) {
@@ -179,7 +105,6 @@ impl SyncWorker {
     pub fn resume(&self, sync_db: &SyncDb) {
         self.paused.store(false, Ordering::Relaxed);
         let _ = sync_db.set_state("sync_paused", "false");
-        self.trigger.notify_one();
         info!("sync resumed");
     }
 
@@ -188,103 +113,77 @@ impl SyncWorker {
     }
 }
 
-/// Main streaming loop. Returns true if shutdown requested.
-async fn run_streaming_loop(
-    stream: &mut SyncStream,
+async fn run_event_loop(
     client: &SyncClient,
-    trigger: &Notify,
+    mut trigger_rx: mpsc::UnboundedReceiver<String>,
     paused: &AtomicBool,
-    shutdown_rx: &mut mpsc::Receiver<()>,
-) -> bool {
-    let mut heartbeat_interval = tokio::time::interval(HEARTBEAT_INTERVAL);
-    heartbeat_interval.tick().await; // skip first immediate tick
-
-    loop {
-        if paused.load(Ordering::Relaxed) {
-            return false;
-        }
-
-        tokio::select! {
-            _ = shutdown_rx.recv() => return true,
-
-            _ = trigger.notified() => {
-                if let Err(e) = client.sync_once_ws(stream).await {
-                    error!("ws sync failed: {e}");
-                    return false; // reconnect
-                }
-            }
-
-            _ = heartbeat_interval.tick() => {
-                let ts = client.query_last_db_updated_at();
-                if let Err(e) = stream.heartbeat(ts).await {
-                    error!("ws heartbeat failed: {e}");
-                    return false; // reconnect
-                }
-            }
-        }
-    }
-}
-
-/// HTTP fallback: one sync cycle + wait for reconnect_delay before retrying ws.
-async fn run_http_fallback(
-    client: &SyncClient,
-    trigger: &Notify,
-    paused: &AtomicBool,
-    shutdown_rx: &mut mpsc::Receiver<()>,
+    mut shutdown_rx: mpsc::Receiver<()>,
     interval: Duration,
-    reconnect_wait: Duration,
 ) {
-    // Do one immediate HTTP sync
-    match client.sync_once().await {
-        Ok(stats) => {
-            if stats.sessions_synced > 0 || stats.sessions_failed > 0 {
-                info!(
-                    "http sync: {} synced, {} failed",
-                    stats.sessions_synced, stats.sessions_failed
-                );
-            }
-        }
-        Err(e) => error!("http sync failed: {e}"),
-    }
+    let mut periodic = tokio::time::interval(interval);
+    periodic.tick().await;
+    let mut failed: HashMap<String, Instant> = HashMap::new();
 
-    // Wait before attempting ws reconnection, but remain responsive to triggers/shutdown
-    let deadline = tokio::time::Instant::now() + reconnect_wait;
     loop {
         if paused.load(Ordering::Relaxed) {
-            return;
-        }
-
-        let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
-        if remaining.is_zero() {
-            return;
+            tokio::select! {
+                _ = shutdown_rx.recv() => break,
+                _ = tokio::time::sleep(Duration::from_secs(5)) => continue,
+            }
         }
 
         tokio::select! {
-            _ = shutdown_rx.recv() => return,
-            _ = trigger.notified() => {
-                match client.sync_once().await {
-                    Ok(stats) => {
-                        if stats.sessions_synced > 0 || stats.sessions_failed > 0 {
-                            info!(
-                                "http sync triggered: {} synced, {} failed",
-                                stats.sessions_synced, stats.sessions_failed
-                            );
+            _ = shutdown_rx.recv() => break,
+
+            Some(session_id) = trigger_rx.recv() => {
+                if paused.load(Ordering::Relaxed) { continue; }
+
+                let mut ids = HashSet::new();
+                ids.insert(session_id);
+                while let Ok(id) = trigger_rx.try_recv() {
+                    ids.insert(id);
+                }
+
+                let now = Instant::now();
+                for id in &ids {
+                    if let Some(fail_at) = failed.get(id.as_str()) {
+                        if now.duration_since(*fail_at) < FAILURE_COOLDOWN {
+                            continue;
                         }
                     }
-                    Err(e) => error!("http sync triggered failed: {e}"),
+
+                    match client.sync_single_session(id).await {
+                        Ok(stats) => {
+                            failed.remove(id.as_str());
+                            if stats.messages_pushed > 0 {
+                                info!(
+                                    "sync {}: {} pushed",
+                                    &id[..8.min(id.len())],
+                                    stats.messages_pushed
+                                );
+                            }
+                        }
+                        Err(e) => {
+                            failed.insert(id.clone(), now);
+                            error!("sync {} failed: {:#}", &id[..8.min(id.len())], e);
+                        }
+                    }
                 }
             }
-            _ = tokio::time::sleep(remaining.min(interval)) => {
+
+            _ = periodic.tick() => {
+                if paused.load(Ordering::Relaxed) { continue; }
+                failed.clear();
                 match client.sync_once().await {
                     Ok(stats) => {
                         if stats.sessions_synced > 0 || stats.sessions_failed > 0 {
                             info!(
-                                "http sync periodic: {} synced, {} failed",
-                                stats.sessions_synced, stats.sessions_failed
+                                "periodic sync: {} synced, {} pushed, {} failed",
+                                stats.sessions_synced, stats.messages_pushed, stats.sessions_failed
                             );
                         }
                     }
-                    Err(e) => error!("http sync periodic failed: {e}"),
+                    Err(e) => error!("periodic sync failed: {e}"),
                 }
             }
         }
