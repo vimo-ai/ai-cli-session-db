@@ -81,6 +81,63 @@ impl SyncClient {
         })
     }
 
+    pub fn effective_api_key(&self) -> Result<String> {
+        if let Ok(Some(key)) = self.sync_db.get_state("api_key") {
+            if !key.is_empty() {
+                return Ok(key);
+            }
+        }
+        if !self.config.api_key.is_empty() {
+            return Ok(self.config.api_key.clone());
+        }
+        anyhow::bail!("no api_key available (not registered and no static key configured)")
+    }
+
+    pub async fn register(&self) -> Result<String> {
+        let url = format!(
+            "{}/api/auth/register",
+            self.config.server.trim_end_matches('/')
+        );
+
+        #[derive(serde::Serialize)]
+        struct Req<'a> {
+            master_key: &'a str,
+            name: &'a str,
+        }
+
+        #[derive(serde::Deserialize)]
+        struct Resp {
+            api_key: String,
+        }
+
+        let response = self
+            .http
+            .post(&url)
+            .json(&Req {
+                master_key: &self.config.master_key,
+                name: &self.config.name,
+            })
+            .send()
+            .await
+            .with_context(|| format!("registration request failed: {url}"))?;
+
+        if !response.status().is_success() {
+            let status = response.status();
+            let body = response.text().await.unwrap_or_default();
+            anyhow::bail!("registration failed ({}): {}", status, body);
+        }
+
+        let resp: Resp = response
+            .json()
+            .await
+            .context("failed to parse registration response")?;
+
+        self.sync_db.set_state("api_key", &resp.api_key)?;
+        info!("registered as '{}', api_key saved", self.config.name);
+
+        Ok(resp.api_key)
+    }
+
     /// 单次同步：collect → filter → push → update cursor
     pub async fn sync_once(&self) -> Result<SyncStats> {
         let mut stats = SyncStats::default();
@@ -388,10 +445,12 @@ impl SyncClient {
 
         let url = format!("{}/api/sync/push", self.config.server.trim_end_matches('/'));
 
+        let api_key = self.effective_api_key()?;
+
         let response = self
             .http
             .post(&url)
-            .bearer_auth(&self.config.api_key)
+            .bearer_auth(&api_key)
             .json(&request)
             .send()
             .await

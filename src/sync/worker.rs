@@ -55,10 +55,22 @@ impl SyncWorker {
         let trigger = Arc::new(Notify::new());
         let trigger_clone = trigger.clone();
         let paused_clone = paused.clone();
+        let sync_db_clone = sync_db.clone();
         let (shutdown_tx, mut shutdown_rx) = mpsc::channel::<()>(1);
 
         tokio::spawn(async move {
             info!("sync worker started");
+
+            if sync_db_clone.get_state("api_key").ok().flatten().is_none()
+                && !config.master_key.is_empty()
+                && !config.name.is_empty()
+            {
+                info!("no api_key found, registering as '{}'", config.name);
+                match client.register().await {
+                    Ok(_) => {}
+                    Err(e) => error!("self-registration failed: {e}"),
+                }
+            }
 
             let mut reconnect_delay = RECONNECT_BASE;
 
@@ -77,11 +89,15 @@ impl SyncWorker {
                 // Try WebSocket streaming mode
                 match SyncStream::connect(&config.server).await {
                     Ok(mut stream) => {
-                        let device_id = sync_db
+                        let device_id = sync_db_clone
                             .get_or_init_device_id()
                             .unwrap_or_else(|_| "unknown".to_string());
 
-                        match stream.authenticate(&device_id, &config.api_key).await {
+                        let api_key = client
+                            .effective_api_key()
+                            .unwrap_or_default();
+
+                        match stream.authenticate(&device_id, &api_key).await {
                             Ok(()) => {
                                 reconnect_delay = RECONNECT_BASE;
                                 info!("ws streaming mode active");
