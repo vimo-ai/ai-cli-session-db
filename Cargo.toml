@@ -16,7 +16,7 @@ reader = []           # 只读能力
 search = ["fts"]      # 搜索能力
 fts = []              # FTS5 支持
 ffi = []              # C FFI 导出 (Swift 绑定用)
-agent = ["writer", "search", "dep:notify", "dep:notify-debouncer-mini"]  # Agent 模式（唯一 Writer + 文件监听 + 事件推送）
+agent = ["writer", "search", "sync", "dep:notify", "dep:notify-debouncer-mini"]  # Agent 模式（唯一 Writer + 文件监听 + 事件推送）
 client = []           # Agent Client（供组件使用）
 sync = ["dep:aho-corasick", "dep:globset", "dep:reqwest", "dep:shellexpand", "dep:tokio-tungstenite", "dep:futures-util"]  # 同步模块（push to server）
 
