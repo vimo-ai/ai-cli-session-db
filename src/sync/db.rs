@@ -43,6 +43,11 @@ CREATE TABLE IF NOT EXISTS sync_state (
 );
 "#;
 
+const MIGRATIONS: &[&str] = &[
+    // v1: sync_cursors 加 synced_message_count，用于 session 级快速变更检测
+    "ALTER TABLE sync_cursors ADD COLUMN synced_message_count INTEGER NOT NULL DEFAULT 0;",
+];
+
 pub struct SyncDb {
     conn: Arc<Mutex<Connection>>,
     path: PathBuf,
@@ -61,6 +66,7 @@ impl SyncDb {
         )?;
 
         conn.execute_batch(SYNC_DB_SCHEMA)?;
+        Self::run_migrations(&conn);
 
         info!("sync.db 已初始化: {}", path.display());
 
@@ -68,6 +74,15 @@ impl SyncDb {
             conn: Arc::new(Mutex::new(conn)),
             path,
         })
+    }
+
+    fn run_migrations(conn: &Connection) {
+        for sql in MIGRATIONS {
+            match conn.execute_batch(sql) {
+                Ok(_) => info!("migration applied: {}", &sql[..sql.len().min(60)]),
+                Err(_) => {} // column already exists, skip
+            }
+        }
     }
 
     pub fn path(&self) -> &Path {
@@ -101,6 +116,21 @@ impl SyncDb {
                 last_sequence = excluded.last_sequence,
                 last_push_at = excluded.last_push_at",
             rusqlite::params![session_id, last_sequence, now],
+        )?;
+        Ok(())
+    }
+
+    pub fn update_cursor_with_count(&self, session_id: &str, last_sequence: i64, message_count: i64) -> Result<()> {
+        let conn = self.conn.lock();
+        let now = chrono::Utc::now().timestamp_millis();
+        conn.execute(
+            "INSERT INTO sync_cursors (session_id, last_sequence, last_push_at, synced_message_count)
+             VALUES (?1, ?2, ?3, ?4)
+             ON CONFLICT(session_id) DO UPDATE SET
+                last_sequence = excluded.last_sequence,
+                last_push_at = excluded.last_push_at,
+                synced_message_count = excluded.synced_message_count",
+            rusqlite::params![session_id, last_sequence, now, message_count],
         )?;
         Ok(())
     }

@@ -84,6 +84,10 @@ impl SyncClient {
         })
     }
 
+    pub fn sync_db(&self) -> &SyncDb {
+        &self.sync_db
+    }
+
     pub fn effective_api_key(&self) -> Result<String> {
         if let Ok(Some(key)) = self.sync_db.get_state("api_key") {
             if !key.is_empty() {
@@ -136,9 +140,28 @@ impl SyncClient {
             .context("failed to parse registration response")?;
 
         self.sync_db.set_state("api_key", &resp.api_key)?;
+        Self::write_api_key_to_config(&resp.api_key);
         info!("registered as '{}', api_key saved", self.config.name);
 
         Ok(resp.api_key)
+    }
+
+    fn write_api_key_to_config(api_key: &str) {
+        let home = dirs::home_dir().unwrap_or_default();
+        let path = home.join(".vimo/memex/config.json");
+        let mut json: serde_json::Value = match std::fs::read_to_string(&path) {
+            Ok(content) => serde_json::from_str(&content).unwrap_or(serde_json::json!({})),
+            Err(_) => serde_json::json!({}),
+        };
+        if let Some(sync) = json.get_mut("sync") {
+            sync["api_key"] = serde_json::json!(api_key);
+        } else {
+            json["sync"] = serde_json::json!({ "api_key": api_key });
+        }
+        match std::fs::write(&path, serde_json::to_string_pretty(&json).unwrap_or_default()) {
+            Ok(_) => info!("api_key written to {}", path.display()),
+            Err(e) => warn!("failed to write api_key to config: {e}"),
+        }
     }
 
     pub async fn sync_single_session(&self, session_id: &str) -> Result<BatchStats> {
@@ -259,6 +282,11 @@ impl SyncClient {
             }
         }
 
+        // session 推完后记录当前 message_count 快照
+        if let Ok(count) = self.read_session_message_count(session_id) {
+            self.sync_db.update_cursor_with_count(session_id, current_cursor, count)?;
+        }
+
         Ok(BatchStats {
             messages_pushed: total_pushed,
             messages_skipped: total_skipped,
@@ -288,6 +316,32 @@ impl SyncClient {
 
         let batch_len = batch.messages.len();
         Ok(Some((batch, batch_max_seq, batch_len)))
+    }
+
+    pub async fn sync_single_session_ws(
+        &self,
+        stream: &mut SyncStream,
+        session_id: &str,
+    ) -> Result<BatchStats> {
+        let project_path = {
+            let conn = self.open_readonly()?;
+            let result = conn.query_row(
+                "SELECT p.path FROM sessions s JOIN projects p ON s.project_id = p.id WHERE s.session_id = ?1",
+                params![session_id],
+                |row| row.get::<_, String>(0),
+            );
+            match result {
+                Ok(path) => path,
+                Err(rusqlite::Error::QueryReturnedNoRows) => return Ok(BatchStats::default()),
+                Err(e) => return Err(e.into()),
+            }
+        };
+
+        if !self.project_filter.is_allowed(&project_path) {
+            return Ok(BatchStats::default());
+        }
+
+        self.sync_session_ws(stream, session_id, &project_path).await
     }
 
     pub(crate) async fn sync_session_ws(
@@ -519,16 +573,10 @@ impl SyncClient {
                 SELECT s.session_id, p.path
                 FROM sessions s
                 JOIN projects p ON s.project_id = p.id
+                LEFT JOIN sync_db.sync_cursors sc ON sc.session_id = s.session_id
                 WHERE s.message_count > 0
-                  AND EXISTS (
-                    SELECT 1 FROM messages m
-                    WHERE m.session_id = s.session_id
-                      AND m.sequence > COALESCE(
-                        (SELECT last_sequence FROM sync_db.sync_cursors sc
-                         WHERE sc.session_id = s.session_id),
-                        0
-                      )
-                  )
+                  AND (sc.session_id IS NULL
+                       OR s.message_count > sc.synced_message_count)
                 "#,
             )?;
 
@@ -592,6 +640,16 @@ impl SyncClient {
             Err(rusqlite::Error::QueryReturnedNoRows) => Ok(None),
             Err(e) => Err(e.into()),
         }
+    }
+
+    fn read_session_message_count(&self, session_id: &str) -> Result<i64> {
+        let conn = self.open_readonly()?;
+        let count = conn.query_row(
+            "SELECT message_count FROM sessions WHERE session_id = ?1",
+            params![session_id],
+            |row| row.get(0),
+        )?;
+        Ok(count)
     }
 
     fn read_session(&self, conn: &Connection, session_id: &str) -> Result<Option<SyncSession>> {

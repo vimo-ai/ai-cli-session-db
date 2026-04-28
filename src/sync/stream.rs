@@ -2,7 +2,7 @@
 
 use anyhow::{Context, Result};
 use futures_util::{SinkExt, StreamExt};
-use tokio_tungstenite::{connect_async, tungstenite};
+use tokio_tungstenite::tungstenite;
 
 use super::{SyncAck, SyncBatch, SyncCursor, SyncFrame};
 
@@ -13,11 +13,41 @@ pub struct SyncStream {
 }
 
 impl SyncStream {
-    pub async fn connect(server_url: &str) -> Result<Self> {
+    pub async fn connect(server_url: &str, ca_cert_pem: Option<&[u8]>) -> Result<Self> {
         let ws_url = http_to_ws_url(server_url);
-        let (ws, _response) = connect_async(&ws_url)
+
+        let ws = if ws_url.starts_with("wss://") {
+            let mut roots = rustls::RootCertStore::empty();
+            if let Some(pem) = ca_cert_pem {
+                let certs = rustls_pemfile::certs(&mut &pem[..])
+                    .filter_map(|r| r.ok())
+                    .collect::<Vec<_>>();
+                for cert in certs {
+                    roots.add(cert).ok();
+                }
+            }
+
+            let tls_config = rustls::ClientConfig::builder()
+                .with_root_certificates(roots)
+                .with_no_client_auth();
+
+            let connector = tokio_tungstenite::Connector::Rustls(std::sync::Arc::new(tls_config));
+            let (ws, _response) = tokio_tungstenite::connect_async_tls_with_config(
+                &ws_url,
+                None,
+                false,
+                Some(connector),
+            )
             .await
-            .with_context(|| format!("ws connect failed: {ws_url}"))?;
+            .with_context(|| format!("wss connect failed: {ws_url}"))?;
+            ws
+        } else {
+            let (ws, _response) = tokio_tungstenite::connect_async(&ws_url)
+                .await
+                .with_context(|| format!("ws connect failed: {ws_url}"))?;
+            ws
+        };
+
         Ok(Self { ws })
     }
 

@@ -1,6 +1,8 @@
-//! Sync Worker - 事件驱动同步
+//! Sync Worker - WebSocket streaming + HTTP fallback, event-driven
 //!
-//! - trigger_session(id): 有数据变更时，只同步该 session
+//! - 优先 WebSocket 流式推送（长连接 + heartbeat）
+//! - WS 不可用时自动 fallback 到 HTTP 轮询
+//! - trigger_session(id): 事件驱动，只同步变化的 session
 //! - 定时全量对齐: 每 interval_seconds 扫一次兜底补漏
 
 use std::collections::{HashMap, HashSet};
@@ -14,8 +16,11 @@ use tokio::sync::mpsc;
 use tokio::time::Instant;
 use tracing::{error, info, warn};
 
-use super::{FilterConfig, SyncClient, SyncConfig, SyncDb};
+use super::{FilterConfig, SyncClient, SyncConfig, SyncDb, SyncStream};
 
+const HEARTBEAT_INTERVAL: Duration = Duration::from_secs(90);
+const RECONNECT_BASE: Duration = Duration::from_secs(1);
+const RECONNECT_CAP: Duration = Duration::from_secs(60);
 const FAILURE_COOLDOWN: Duration = Duration::from_secs(60);
 
 pub struct SyncWorker {
@@ -56,6 +61,11 @@ impl SyncWorker {
         let paused_clone = paused.clone();
         let (shutdown_tx, shutdown_rx) = mpsc::channel::<()>(1);
 
+        let ca_pem: Option<Vec<u8>> = config.ca_cert.as_ref().and_then(|p| {
+            let expanded = shellexpand::tilde(p);
+            std::fs::read(expanded.as_ref()).ok()
+        });
+
         tokio::spawn(async move {
             info!("sync worker started");
 
@@ -70,7 +80,16 @@ impl SyncWorker {
                 }
             }
 
-            run_event_loop(&client, trigger_rx, &paused_clone, shutdown_rx, interval).await;
+            run_main_loop(
+                &config,
+                &client,
+                ca_pem.as_deref(),
+                trigger_rx,
+                &paused_clone,
+                shutdown_rx,
+                interval,
+            )
+            .await;
 
             info!("sync worker exited");
         });
@@ -113,11 +132,163 @@ impl SyncWorker {
     }
 }
 
-async fn run_event_loop(
+async fn run_main_loop(
+    config: &SyncConfig,
     client: &SyncClient,
+    ca_pem: Option<&[u8]>,
     mut trigger_rx: mpsc::UnboundedReceiver<String>,
     paused: &AtomicBool,
     mut shutdown_rx: mpsc::Receiver<()>,
+    interval: Duration,
+) {
+    let mut reconnect_delay = RECONNECT_BASE;
+
+    loop {
+        if shutdown_rx.try_recv().is_ok() {
+            break;
+        }
+
+        if paused.load(Ordering::Relaxed) {
+            tokio::select! {
+                _ = shutdown_rx.recv() => break,
+                _ = tokio::time::sleep(Duration::from_secs(5)) => continue,
+            }
+        }
+
+        let api_key = match client.effective_api_key() {
+            Ok(k) => k,
+            Err(e) => {
+                warn!("no api_key, HTTP-only: {e}");
+                run_http_event_loop(client, &mut trigger_rx, paused, &mut shutdown_rx, interval)
+                    .await;
+                break;
+            }
+        };
+
+        match SyncStream::connect(&config.server, ca_pem).await {
+            Ok(mut stream) => {
+                let device_id = client
+                    .sync_db()
+                    .get_or_init_device_id()
+                    .unwrap_or_else(|_| "unknown".to_string());
+
+                match stream.authenticate(&device_id, &api_key).await {
+                    Ok(()) => {
+                        reconnect_delay = RECONNECT_BASE;
+                        info!("ws streaming mode active");
+
+                        let exit = run_ws_event_loop(
+                            &mut stream,
+                            client,
+                            &mut trigger_rx,
+                            paused,
+                            &mut shutdown_rx,
+                            interval,
+                        )
+                        .await;
+
+                        stream.close().await;
+
+                        if exit {
+                            break;
+                        }
+
+                        warn!("ws disconnected, will reconnect in {}s", reconnect_delay.as_secs());
+                    }
+                    Err(e) => {
+                        warn!("ws auth failed: {e}, falling back to HTTP");
+                        stream.close().await;
+                    }
+                }
+            }
+            Err(e) => {
+                info!("ws connect failed ({e}), using HTTP fallback");
+            }
+        }
+
+        // HTTP fallback for one interval, then retry WS
+        let fallback_exit = run_http_fallback_once(
+            client,
+            &mut trigger_rx,
+            paused,
+            &mut shutdown_rx,
+            interval,
+            reconnect_delay,
+        )
+        .await;
+
+        if fallback_exit {
+            break;
+        }
+
+        reconnect_delay = (reconnect_delay * 2).min(RECONNECT_CAP);
+    }
+}
+
+/// WS event loop: trigger_session → sync_session_ws, periodic → sync_once_ws
+async fn run_ws_event_loop(
+    stream: &mut SyncStream,
+    client: &SyncClient,
+    trigger_rx: &mut mpsc::UnboundedReceiver<String>,
+    paused: &AtomicBool,
+    shutdown_rx: &mut mpsc::Receiver<()>,
+    interval: Duration,
+) -> bool {
+    let mut periodic = tokio::time::interval(interval);
+    periodic.tick().await;
+    let mut heartbeat = tokio::time::interval(HEARTBEAT_INTERVAL);
+    heartbeat.tick().await;
+
+    loop {
+        if paused.load(Ordering::Relaxed) {
+            return false;
+        }
+
+        tokio::select! {
+            _ = shutdown_rx.recv() => return true,
+
+            Some(session_id) = trigger_rx.recv() => {
+                if paused.load(Ordering::Relaxed) { continue; }
+
+                let mut ids = HashSet::new();
+                ids.insert(session_id);
+                while let Ok(id) = trigger_rx.try_recv() {
+                    ids.insert(id);
+                }
+
+                for id in &ids {
+                    if let Err(e) = client.sync_single_session_ws(stream, id).await {
+                        error!("ws sync {} failed: {:#}", &id[..8.min(id.len())], e);
+                        return false;
+                    }
+                }
+            }
+
+            _ = periodic.tick() => {
+                if paused.load(Ordering::Relaxed) { continue; }
+                if let Err(e) = client.sync_once_ws(stream).await {
+                    error!("ws periodic sync failed: {e}");
+                    return false;
+                }
+            }
+
+            _ = heartbeat.tick() => {
+                let ts = client.query_last_db_updated_at();
+                if let Err(e) = stream.heartbeat(ts).await {
+                    error!("ws heartbeat failed: {e}");
+                    return false;
+                }
+            }
+        }
+    }
+}
+
+/// HTTP event loop (permanent, when WS is not available at all)
+async fn run_http_event_loop(
+    client: &SyncClient,
+    trigger_rx: &mut mpsc::UnboundedReceiver<String>,
+    paused: &AtomicBool,
+    shutdown_rx: &mut mpsc::Receiver<()>,
     interval: Duration,
 ) {
     let mut periodic = tokio::time::interval(interval);
@@ -184,6 +355,79 @@ async fn run_event_loop(
                         }
                     }
                     Err(e) => error!("periodic sync failed: {e}"),
+                }
+            }
+        }
+    }
+}
+
+/// HTTP fallback: run event loop for reconnect_delay duration, then return to retry WS
+async fn run_http_fallback_once(
+    client: &SyncClient,
+    trigger_rx: &mut mpsc::UnboundedReceiver<String>,
+    paused: &AtomicBool,
+    shutdown_rx: &mut mpsc::Receiver<()>,
+    interval: Duration,
+    reconnect_wait: Duration,
+) -> bool {
+    let deadline = tokio::time::Instant::now() + reconnect_wait;
+    let mut periodic = tokio::time::interval(interval);
+    periodic.tick().await;
+
+    // Immediate sync on entering fallback
+    if !paused.load(Ordering::Relaxed) {
+        match client.sync_once().await {
+            Ok(stats) => {
+                if stats.sessions_synced > 0 {
+                    info!("http fallback: {} synced, {} pushed", stats.sessions_synced, stats.messages_pushed);
+                }
+            }
+            Err(e) => error!("http fallback sync failed: {e}"),
+        }
+    }
+
+    loop {
+        if tokio::time::Instant::now() >= deadline {
+            return false;
+        }
+        if paused.load(Ordering::Relaxed) {
+            return false;
+        }
+
+        let remaining = deadline - tokio::time::Instant::now();
+
+        tokio::select! {
+            _ = shutdown_rx.recv() => return true,
+
+            Some(session_id) = trigger_rx.recv() => {
+                let mut ids = HashSet::new();
+                ids.insert(session_id);
+                while let Ok(id) = trigger_rx.try_recv() {
+                    ids.insert(id);
+                }
+
+                for id in &ids {
+                    match client.sync_single_session(&id).await {
+                        Ok(stats) => {
+                            if stats.messages_pushed > 0 {
+                                info!("http fallback sync {}: {} pushed", &id[..8.min(id.len())], stats.messages_pushed);
+                            }
+                        }
+                        Err(e) => error!("http fallback sync {} failed: {:#}", &id[..8.min(id.len())], e),
+                    }
+                }
+            }
+
+            _ = tokio::time::sleep(remaining.min(interval)) => {
+                if !paused.load(Ordering::Relaxed) {
+                    match client.sync_once().await {
+                        Ok(stats) => {
+                            if stats.sessions_synced > 0 {
+                                info!("http fallback periodic: {} synced", stats.sessions_synced);
+                            }
+                        }
+                        Err(e) => error!("http fallback periodic failed: {e}"),
+                    }
                 }
             }
         }
