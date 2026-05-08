@@ -124,6 +124,9 @@ impl Agent {
         // 创建文件监听器
         let watcher = FileWatcher::new(db.clone());
 
+        #[cfg(feature = "sync")]
+        let _ = rustls::crypto::ring::default_provider().install_default();
+
         // 加载 sync 配置并启动 worker
         let (sync_worker, sync_db) = {
             let sync_config = Self::load_sync_config(&config.data_dir);
