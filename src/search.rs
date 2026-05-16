@@ -413,6 +413,86 @@ impl SessionDB {
         rows.collect::<std::result::Result<Vec<_>, _>>()
             .map_err(Into::into)
     }
+
+    /// 搜索 talks 表 FTS (L2 摘要搜索)
+    ///
+    /// 用于 server 端无 CompactDB 时的 fallback 搜索路径
+    pub fn search_talks_fts(
+        &self,
+        query: &str,
+        limit: usize,
+        project_id: Option<i64>,
+    ) -> Result<Vec<crate::types::TalkSearchResult>> {
+        let conn = self.conn.lock();
+
+        let escaped_query = escape_fts5_query(query);
+        if escaped_query.is_empty() {
+            return Ok(vec![]);
+        }
+
+        let mut where_clauses = vec!["talks_fts MATCH ?1".to_string()];
+        let mut params_vec: Vec<Box<dyn rusqlite::ToSql>> =
+            vec![Box::new(escaped_query) as Box<dyn rusqlite::ToSql>];
+        let mut param_idx = 2;
+
+        if let Some(pid) = project_id {
+            where_clauses.push(format!("s.project_id = ?{}", param_idx));
+            params_vec.push(Box::new(pid));
+            param_idx += 1;
+        }
+
+        params_vec.push(Box::new(limit as i64));
+
+        let sql = format!(
+            r#"
+            SELECT
+                t.id,
+                t.session_id,
+                t.talk_id,
+                t.summary_l2,
+                t.summary_l3,
+                s.project_id,
+                p.name as project_name,
+                snippet(talks_fts, 0, '<mark>', '</mark>', '...', 64) as snippet,
+                bm25(talks_fts) as score,
+                t.created_at
+            FROM talks_fts
+            JOIN talks t ON talks_fts.rowid = t.id
+            JOIN sessions s ON t.session_id = s.session_id
+            JOIN projects p ON s.project_id = p.id
+            WHERE {}
+            ORDER BY score
+            LIMIT ?{}
+            "#,
+            where_clauses.join(" AND "),
+            param_idx
+        );
+
+        let mut stmt = match conn.prepare(&sql) {
+            Ok(s) => s,
+            Err(_) => return Ok(vec![]),
+        };
+        let params_refs: Vec<&dyn rusqlite::ToSql> =
+            params_vec.iter().map(|p| p.as_ref()).collect();
+
+        let rows = stmt.query_map(params_refs.as_slice(), |row| {
+            Ok(crate::types::TalkSearchResult {
+                id: row.get(0)?,
+                session_id: row.get(1)?,
+                talk_id: row.get(2)?,
+                summary_l2: row.get(3)?,
+                summary_l3: row.get(4)?,
+                project_id: row.get(5)?,
+                project_name: row.get(6)?,
+                snippet: row.get(7)?,
+                score: row.get(8)?,
+                created_at: row.get(9)?,
+            })
+        })?;
+
+        rows.collect::<std::result::Result<Vec<_>, _>>()
+            .map_err(Into::into)
+    }
 }
 
 #[cfg(test)]

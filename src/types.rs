@@ -216,6 +216,22 @@ pub struct TalkSummary {
     pub updated_at: i64,
 }
 
+/// Talk FTS 搜索结果
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TalkSearchResult {
+    pub id: i64,
+    pub session_id: String,
+    pub talk_id: String,
+    pub summary_l2: String,
+    pub summary_l3: Option<String>,
+    pub project_id: i64,
+    pub project_name: String,
+    pub snippet: String,
+    pub score: f64,
+    pub created_at: i64,
+}
+
 /// 会话关系（parent→child）
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]

@@ -149,6 +149,27 @@ CREATE TRIGGER IF NOT EXISTS messages_au AFTER UPDATE ON messages BEGIN
     INSERT INTO messages_fts(messages_fts, rowid, content_full) VALUES('delete', old.id, old.content_full);
     INSERT INTO messages_fts(rowid, content_full) VALUES (new.id, new.content_full);
 END;
+
+-- Talks FTS (索引 summary_l2，供 server 端搜索 L2 摘要)
+CREATE VIRTUAL TABLE IF NOT EXISTS talks_fts USING fts5(
+    summary_l2,
+    content='talks',
+    content_rowid='id',
+    tokenize='unicode61'
+);
+
+CREATE TRIGGER IF NOT EXISTS talks_ai AFTER INSERT ON talks BEGIN
+    INSERT INTO talks_fts(rowid, summary_l2) VALUES (new.id, new.summary_l2);
+END;
+
+CREATE TRIGGER IF NOT EXISTS talks_ad AFTER DELETE ON talks BEGIN
+    INSERT INTO talks_fts(talks_fts, rowid, summary_l2) VALUES('delete', old.id, old.summary_l2);
+END;
+
+CREATE TRIGGER IF NOT EXISTS talks_au AFTER UPDATE ON talks BEGIN
+    INSERT INTO talks_fts(talks_fts, rowid, summary_l2) VALUES('delete', old.id, old.summary_l2);
+    INSERT INTO talks_fts(rowid, summary_l2) VALUES (new.id, new.summary_l2);
+END;
 "#;
 
 /// 兼容旧代码：核心 Schema SQL（表 + 索引）
